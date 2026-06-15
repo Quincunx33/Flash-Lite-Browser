@@ -7,7 +7,7 @@ export async function onRequestPost(context) {
     const { prompt, currentPageHtml, isGrounded, formState, isMobile, userApiKey, strictUserKey } = await request.json();
 
     // 1. Key Retrieval
-    let apiKey = userApiKey && userApiKey.length > 5 ? userApiKey : null;
+    let apiKey = userApiKey && typeof userApiKey === 'string' && userApiKey.trim().length > 10 ? userApiKey.trim() : null;
     
     if (!apiKey && !strictUserKey) {
       const keys = [
@@ -16,29 +16,41 @@ export async function onRequestPost(context) {
         env.GEMINI_API_KEY_3,
         env.GEMINI_API_KEY_4,
         env.GEMINI_API_KEY
-      ].filter(k => k && k.trim() !== "");
+      ].map(k => k?.trim()).filter(k => k && k.length > 10);
       
-      apiKey = keys[0] || null; // Simplified for the function worker
+      apiKey = keys[0] || null;
     }
 
     if (!apiKey) {
-      return new Response(JSON.stringify({ error: { message: "No API key found." } }), {
+      return new Response(JSON.stringify({ 
+        error: { 
+          message: strictUserKey 
+            ? "Custom API Key is required but missing or invalid. Please check your settings." 
+            : "Server configuration error: No Gemini API keys found. Please set GEMINI_API_KEY in your dashboard." 
+        } 
+      }), {
         status: 400,
         headers: { "Content-Type": "application/json" }
       });
     }
 
-    const genAI = new GoogleGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ 
-      model: 'gemini-1.5-flash-latest',
-      systemInstruction: "You are Flash-Lite Browser. Generate complete HTML pages using Tailwind CSS. Return ONLY the HTML code."
+    // Initialize with safe check
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
     });
 
     const userPrompt = currentPageHtml 
       ? `Update this page: "${prompt}"\nCurrent HTML: ${currentPageHtml}`
       : `Generate a new page: "${prompt}"`;
 
-    const result = await model.generateContentStream({
+    const streamResponse = await ai.models.generateContentStream({
+      model: 'gemini-3.1-flash-lite',
+      systemInstruction: "You are Flash-Lite Browser. Generate complete HTML pages using Tailwind CSS. Return ONLY the HTML code.",
       contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
       tools: isGrounded ? [{ googleSearch: {} }] : []
     });
@@ -49,8 +61,8 @@ export async function onRequestPost(context) {
 
     (async () => {
       try {
-        for await (const chunk of result.stream) {
-          const text = chunk.text();
+        for await (const chunk of streamResponse) {
+          const text = chunk.text;
           if (text) {
             await writer.write(encoder.encode(text));
           }

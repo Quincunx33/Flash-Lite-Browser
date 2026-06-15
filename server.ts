@@ -15,13 +15,13 @@ let exhaustedKeys = new Set<string>();
 
 function getApiKey(userKey?: string, strictUserKey: boolean = false) {
   // 1. User provided key from browser (Settings menu)
-  if (userKey && userKey.length > 5) {
+  if (userKey && typeof userKey === 'string' && userKey.trim().length > 10) {
     console.log("Using custom user-provided API key from browser.");
-    return userKey;
+    return userKey.trim();
   }
   
   if (strictUserKey) {
-    console.log("Strict mode active: No user key provided.");
+    console.log("Strict mode active: No valid user key provided.");
     return null;
   }
 
@@ -32,17 +32,14 @@ function getApiKey(userKey?: string, strictUserKey: boolean = false) {
     process.env.GEMINI_API_KEY_3,
     process.env.GEMINI_API_KEY_4,
     process.env.GEMINI_API_KEY
-  ].filter(Boolean) as string[];
+  ].map(k => k?.trim()).filter(k => k && k.length > 10) as string[];
 
-  console.log(`Found ${keys.length} system API keys in environment.`);
+  console.log(`Found ${keys.length} valid system API keys in environment.`);
+
+  if (keys.length === 0) return null;
 
   const availableKey = keys.find(k => !exhaustedKeys.has(k));
-  if (availableKey) {
-    return availableKey;
-  }
-
-  // Backup: if all keys exhausted, just use the first one and hope for the best
-  return keys[0] || null;
+  return availableKey || keys[0];
 }
 
 const SYSTEM_PROMPT = `
@@ -50,8 +47,6 @@ You are Flash-Lite Browser, powered by Gemini 3.1 Flash-Lite.
 You generate complete, functional HTML documents using Tailwind CSS and Material Symbols.
 Return ONLY the HTML code.
 `;
-
-const MODEL_NAME = 'gemini-1.5-flash-latest';
 
 // --- API Endpoints ---
 app.post("/api/generate", async (req, res) => {
@@ -65,16 +60,19 @@ app.post("/api/generate", async (req, res) => {
     
     if (!apiKey) {
       const msg = strictUserKey 
-        ? "Custom API Key is required but not set. Please enter it in Settings (⋮)." 
-        : "No Gemini API keys found on the server. Please add GEMINI_API_KEY_1 to your environment variables.";
+        ? "Custom API Key is required but missing or invalid. Please check your settings in the (⋮) menu." 
+        : "No Gemini API keys found on the server. Please ensure you have set GEMINI_API_KEY in your AI Studio project settings.";
       return res.status(400).json({ error: { message: msg } });
     }
 
     try {
-      const genAI = new GoogleGenAI(apiKey);
-      const model = genAI.getGenerativeModel({ 
-        model: MODEL_NAME,
-        systemInstruction: SYSTEM_PROMPT
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
       });
 
       const userPrompt = currentPageHtml 
@@ -84,13 +82,15 @@ app.post("/api/generate", async (req, res) => {
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.setHeader('Transfer-Encoding', 'chunked');
 
-      const result = await model.generateContentStream({
+      const streamResponse = await ai.models.generateContentStream({
+        model: 'gemini-3.1-flash-lite',
+        systemInstruction: SYSTEM_PROMPT,
         contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
         tools: isGrounded ? [{ googleSearch: {} }] : []
       });
 
-      for await (const chunk of result.stream) {
-        const text = chunk.text();
+      for await (const chunk of streamResponse) {
+        const text = chunk.text; // Access text property, not method
         if (text) res.write(text);
       }
       

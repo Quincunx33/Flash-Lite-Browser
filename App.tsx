@@ -72,7 +72,7 @@ const App: React.FC = () => {
     updateTab(tabIndex, tab => ({
       ...tab,
       loading: true,
-      loadingMessage: 'Streaming website from Gemini 3.1 Flash',
+      loadingMessage: 'Streaming website from Gemini 3.1 Flash-Lite',
       generatedContent: '',
       tokenCount: null,
       groundingSources: [],
@@ -141,7 +141,7 @@ const App: React.FC = () => {
         updateTab(tabIndex, tab => ({
           ...tab,
           generatedContent: currentFullHtml,
-          loadingMessage: 'Streaming website from Gemini 3.1 Flash',
+          loadingMessage: 'Streaming website from Gemini 3.1 Flash-Lite',
           ...(extractedBreadcrumb ? { breadcrumb: extractedBreadcrumb } : {}),
         }));
       }
