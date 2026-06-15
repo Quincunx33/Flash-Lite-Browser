@@ -19,6 +19,8 @@ interface AddressBarProps {
   htmlContent?: string;
   userApiKey?: string;
   onSaveApiKey?: (key: string) => void;
+  useCustomKey?: boolean;
+  onToggleCustomKey?: () => void;
 }
 
 export const AddressBar: React.FC<AddressBarProps> = ({
@@ -38,6 +40,8 @@ export const AddressBar: React.FC<AddressBarProps> = ({
   htmlContent,
   userApiKey = '',
   onSaveApiKey,
+  useCustomKey = false,
+  onToggleCustomKey,
 }) => {
   const displayText = breadcrumbToDisplay(breadcrumb);
   const [inputVal, setInputVal] = useState(displayText);
@@ -305,6 +309,20 @@ export const AddressBar: React.FC<AddressBarProps> = ({
             
             <div className="px-4 py-2">
               <div className="text-[10px] text-[#9aa0a6] uppercase tracking-wider mb-2 font-medium">Settings</div>
+              
+              <label className="dropdown-menu-item px-0 mb-3" onClick={(e) => e.stopPropagation()}>
+                <span className="text-[11px]">Use Custom Key Only</span>
+                <div
+                  className={`toggle-track ${useCustomKey ? 'active' : ''}`}
+                  onClick={onToggleCustomKey}
+                  role="switch"
+                  aria-checked={useCustomKey}
+                  tabIndex={0}
+                >
+                  <div className="toggle-thumb" />
+                </div>
+              </label>
+
               <div className="flex flex-col gap-2">
                 <label className="text-[11px] text-[#c4c7cc]">Gemini API Key</label>
                 <div className="flex gap-1">

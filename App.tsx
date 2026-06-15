@@ -18,6 +18,9 @@ const App: React.FC = () => {
   const [userApiKey, setUserApiKey] = useState<string>(() => {
     return localStorage.getItem('GEMINI_API_KEY_OVERRIDE') || '';
   });
+  const [useCustomKey, setUseCustomKey] = useState<boolean>(() => {
+    return localStorage.getItem('USE_CUSTOM_KEY') === 'true';
+  });
 
   const handleSaveApiKey = useCallback((key: string) => {
     setUserApiKey(key);
@@ -26,6 +29,14 @@ const App: React.FC = () => {
     } else {
       localStorage.removeItem('GEMINI_API_KEY_OVERRIDE');
     }
+  }, []);
+
+  const handleToggleCustomKey = useCallback(() => {
+    setUseCustomKey(prev => {
+      const next = !prev;
+      localStorage.setItem('USE_CUSTOM_KEY', String(next));
+      return next;
+    });
   }, []);
 
   // Abort controllers keyed by tab id
@@ -77,7 +88,16 @@ const App: React.FC = () => {
     let titleExtracted = false;
 
     try {
-      const stream = streamPageGeneration(prompt, currentHtml, isGrounded, controller.signal, formState, window.innerWidth <= 768, userApiKey);
+      const stream = streamPageGeneration(
+        prompt, 
+        currentHtml, 
+        isGrounded, 
+        controller.signal, 
+        formState, 
+        window.innerWidth <= 768, 
+        useCustomKey ? userApiKey : undefined,
+        useCustomKey
+      );
 
       for await (const chunk of stream) {
         if (controller.signal.aborted) break;
@@ -172,14 +192,80 @@ const App: React.FC = () => {
       if (e?.name === 'AbortError' || controller.signal.aborted) return;
       console.error('Generation failed', e);
       const errorMessage = e instanceof Error ? e.message : 'Failed to generate page';
+      
+      let displayErrorMessage = errorMessage;
+      let isQuotaError = false;
+      
+      try {
+        // Try parsing JSON error from Gemini
+        if (errorMessage.startsWith('{')) {
+          const parsed = JSON.parse(errorMessage);
+          if (parsed.error?.message) {
+            displayErrorMessage = parsed.error.message;
+            if (parsed.error.code === 429 || parsed.error.status === 'RESOURCE_EXHAUSTED') {
+              isQuotaError = true;
+            }
+          }
+        }
+      } catch (e) { }
+
+      if (!isQuotaError) {
+        isQuotaError = displayErrorMessage.toLowerCase().includes('quota') || 
+                       displayErrorMessage.toLowerCase().includes('exhausted') || 
+                       displayErrorMessage.includes('429');
+      }
+
       updateTab(tabIndex, tab => ({
         ...tab,
         breadcrumb: fallbackBreadcrumb,
-        generatedContent: `<div class="p-10 bg-white text-black">
-          <h1 class="text-2xl font-bold text-red-600 mb-4">Generation Error</h1>
-          <p class="mb-4">${errorMessage}</p>
-          <div class="p-4 bg-gray-100 rounded border border-gray-300 font-mono text-sm">
-            Check your Environment Variables in the Settings menu.
+        generatedContent: `<div class="p-10 bg-white text-black font-sans leading-normal">
+          <div class="max-w-2xl mx-auto">
+            <div class="flex items-center gap-3 mb-6">
+              <span class="material-symbols-outlined text-4xl text-red-600">error</span>
+              <h1 class="text-3xl font-bold tracking-tight">${isQuotaError ? 'Quota Exceeded' : 'Generation Error'}</h1>
+            </div>
+            
+            <p class="text-lg mb-8 text-gray-700">
+              ${isQuotaError 
+                ? 'The global Gemini API key has reached its free usage limit. To continue browsing without interruption, you can use your own free individual key.' 
+                : displayErrorMessage}
+            </p>
+
+            ${isQuotaError ? `
+            <div class="bg-indigo-50 border border-indigo-100 p-8 rounded-2xl mb-8 shadow-sm">
+              <h2 class="text-xl font-bold text-indigo-900 mb-4 flex items-center gap-2">
+                <span class="material-symbols-outlined">key</span>
+                How to add your own key:
+              </h2>
+              <ol class="space-y-4 text-indigo-800">
+                <li class="flex gap-3">
+                  <span class="flex-shrink-0 w-6 h-6 bg-indigo-200 text-indigo-800 rounded-full flex items-center justify-center text-sm font-bold">1</span>
+                  <span>Get a free key from <a href="https://aistudio.google.com/app/apikey" target="_blank" class="font-bold underline decoration-indigo-300 hover:text-indigo-600">Google AI Studio</a>.</span>
+                </li>
+                <li class="flex gap-3">
+                  <span class="flex-shrink-0 w-6 h-6 bg-indigo-200 text-indigo-800 rounded-full flex items-center justify-center text-sm font-bold">2</span>
+                  <span>Click the <b>three dots (⋮)</b> in the top right of this browser's address bar.</span>
+                </li>
+                <li class="flex gap-3">
+                  <span class="flex-shrink-0 w-6 h-6 bg-indigo-200 text-indigo-800 rounded-full flex items-center justify-center text-sm font-bold">3</span>
+                  <span>Paste it into the <b>Gemini API Key</b> field and press save.</span>
+                </li>
+              </ol>
+            </div>
+            ` : `
+            <div class="p-6 bg-gray-50 rounded-2xl border border-gray-200 font-mono text-sm break-all mb-8 shadow-inner">
+              ${errorMessage}
+            </div>
+            `}
+
+            <div class="flex gap-3">
+              <button onclick="window.location.reload()" class="px-8 py-4 bg-gray-900 text-white rounded-2xl font-bold hover:bg-black transition-all active:scale-[0.98] shadow-lg shadow-gray-200">
+                Refresh Page
+              </button>
+              <button onclick="window.parent.postMessage('open_settings', '*')" class="px-8 py-4 bg-white border border-gray-200 text-gray-700 rounded-2xl font-bold hover:bg-gray-50 transition-all active:scale-[0.98]">
+                Close Browser
+              </button>
+            </div>
           </div>
         </div>`,
       }));
@@ -193,7 +279,7 @@ const App: React.FC = () => {
         abortControllersRef.current.delete(tabId);
       }
     }
-  }, [isGrounded, activeTabIndex, tabs, updateTab]);
+  }, [isGrounded, activeTabIndex, tabs, updateTab, userApiKey]);
 
   // -- Stop loading --
   const handleStop = useCallback(() => {
@@ -397,6 +483,8 @@ const App: React.FC = () => {
         htmlContent={displayContent}
         userApiKey={userApiKey}
         onSaveApiKey={handleSaveApiKey}
+        useCustomKey={useCustomKey}
+        onToggleCustomKey={handleToggleCustomKey}
       >
         {isNewTab ? (
           <NewTab onCreatePage={handleCreate} />

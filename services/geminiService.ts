@@ -3,22 +3,61 @@ import { TokenCount } from '../types';
 
 let aiInstance: GoogleGenAI | null = null;
 let currentKey: string | null = null;
+let exhaustedKeys = new Set<string>();
 
-function getAi(userKey?: string) {
-  const apiKey = userKey || process.env.GEMINI_API_KEY;
-  
-  if (!apiKey || apiKey === 'undefined') {
+function getAi(userKey?: string, strictUserKey: boolean = false) {
+  // 1. User Override Key (highest priority)
+  if (userKey) {
+    if (aiInstance && currentKey === userKey) return aiInstance;
+    currentKey = userKey;
+    aiInstance = new GoogleGenAI({ apiKey: userKey });
+    return aiInstance;
+  }
+
+  // If strict mode is ON but no userKey was provided (or was empty)
+  if (strictUserKey) {
+    throw new Error("Custom API Key is required but not set. Please enter it in the Settings menu (⋮).");
+  }
+
+  // 2. System Rotation Keys
+  const systemKeys = [
+    process.env.GEMINI_API_KEY_1,
+    process.env.GEMINI_API_KEY_2,
+    process.env.GEMINI_API_KEY_3,
+    process.env.GEMINI_API_KEY_4,
+    process.env.GEMINI_API_KEY // Legacy support
+  ].filter(k => k && k !== 'undefined');
+
+  // Find the first key that isn't known to be exhausted in this session
+  const availableKey = systemKeys.find(k => !exhaustedKeys.has(k!));
+
+  if (!availableKey) {
+    // If all are exhausted, we might as well try the first one again or throw
+    if (systemKeys.length > 0) {
+      const first = systemKeys[0]!;
+      if (currentKey !== first) {
+        currentKey = first;
+        aiInstance = new GoogleGenAI({ apiKey: first });
+      }
+      return aiInstance!;
+    }
     throw new Error("GEMINI_API_KEY is missing. Please enter your API key in the Settings menu (⋮).");
   }
 
-  // If the key has changed, re-initialize the instance
-  if (aiInstance && currentKey === apiKey) {
+  if (aiInstance && currentKey === availableKey) {
     return aiInstance;
   }
-  
-  currentKey = apiKey;
-  aiInstance = new GoogleGenAI({ apiKey });
+
+  currentKey = availableKey;
+  aiInstance = new GoogleGenAI({ apiKey: availableKey });
   return aiInstance;
+}
+
+/**
+ * Marks a key as exhausted so we don't try it again immediately
+ */
+export function markKeyAsExhausted(key: string) {
+  if (key) exhaustedKeys.add(key);
 }
 
 const MODEL_NAME = 'gemini-3.1-flash-lite-preview'; 
@@ -86,15 +125,21 @@ export async function* streamPageGeneration(
   formState?: Array<{ name: string; type: string; value: string }>,
   isMobile: boolean = false,
   userApiKey?: string,
+  strictUserKey: boolean = false,
 ): AsyncGenerator<string> {
-  const isEdit = currentPageHtml !== null;
+  let attempt = 0;
+  const maxAttempts = 3;
 
-  let userPrompt: string;
-  if (isEdit) {
-    const formStateBlock = formState && formState.length > 0
-      ? `\n\nThe user entered the following values into input fields on the previous page:\n${formState.map(f => `- ${f.name || 'unnamed'} (${f.type}): "${f.value}"`).join('\n')}\n`
-      : '';
-    userPrompt = `
+  while (attempt < maxAttempts) {
+    try {
+      const isEdit = currentPageHtml !== null;
+
+      let userPrompt: string;
+      if (isEdit) {
+        const formStateBlock = formState && formState.length > 0
+          ? `\n\nThe user entered the following values into input fields on the previous page:\n${formState.map(f => `- ${f.name || 'unnamed'} (${f.type}): "${f.value}"`).join('\n')}\n`
+          : '';
+        userPrompt = `
 Update this page based on the following.
 Instruction: "${prompt}"
 
@@ -104,95 +149,114 @@ Return the complete updated HTML document.${formStateBlock}
 CURRENT HTML:
 ${currentPageHtml}
 `;
-  } else {
-    userPrompt = `
+      } else {
+        userPrompt = `
 Task: Generate a new web page.
 Description: "${prompt}"
 
 Create a complete, detailed, realistic-looking web page based on this description.
 `;
-  }
+      }
 
-  // When grounding is on, encourage the model to use search
-  if (isGrounded) {
-    userPrompt += `\nIMPORTANT: You have access to Google Search. Use it to find current, accurate data for populating the page content. Always ground the page in search results — use real names, real statistics, real facts from your Google searches.\n`;
-  }
+      // When grounding is on, encourage the model to use search
+      if (isGrounded) {
+        userPrompt += `\nIMPORTANT: You have access to Google Search. Use it to find current, accurate data for populating the page content. Always ground the page in search results — use real names, real statistics, real facts from your Google searches.\n`;
+      }
 
-  // Mobile-first layout instructions
-  if (isMobile) {
-    userPrompt += `\nIMPORTANT: The user is on a MOBILE device with a narrow viewport. Design mobile-first:\n- Use a single-column layout\n- Use responsive Tailwind classes)\n- Avoid horizontal scrolling\n- Stack elements vertically\n- Keep navigation simple\n`;
-  }
+      // Mobile-first layout instructions
+      if (isMobile) {
+        userPrompt += `\nIMPORTANT: The user is on a MOBILE device with a narrow viewport. Design mobile-first:\n- Use a single-column layout\n- Use responsive Tailwind classes)\n- Avoid horizontal scrolling\n- Stack elements vertically\n- Keep navigation simple\n`;
+      }
 
-  const config: any = {
-    systemInstruction: SYSTEM_PROMPT,
-  };
+      const config: any = {
+        systemInstruction: SYSTEM_PROMPT,
+      };
 
-  if (isGrounded) {
-    config.tools = [{ googleSearch: {} }];
-  }
+      if (isGrounded) {
+        config.tools = [{ googleSearch: {} }];
+      }
 
-  try {
-    // Pre-flight: get exact input token count
-    let inputTokens = 0;
-    try {
-      const countResult = await getAi(userApiKey).models.countTokens({
+      // Pre-flight: get exact input token count
+      let inputTokens = 0;
+      const currentAi = getAi(userApiKey, strictUserKey);
+      const usedKey = currentKey; // Capture which key we're using
+
+      try {
+        const countResult = await currentAi.models.countTokens({
+          model: MODEL_NAME,
+          contents: [
+            { role: 'user', parts: [{ text: config.systemInstruction || '' }] },
+            { role: 'user', parts: [{ text: userPrompt }] },
+          ],
+        });
+        inputTokens = countResult.totalTokens || 0;
+      } catch (e) {
+        console.warn('countTokens failed, will use usageMetadata:', e);
+      }
+
+      // Yield initial token estimate (exact input, zero output)
+      yield `__TOKEN__${JSON.stringify({ input: inputTokens, output: 0, isEstimate: true })}`;
+
+      const responseStream = await currentAi.models.generateContentStream({
         model: MODEL_NAME,
-        contents: [
-          { role: 'user', parts: [{ text: config.systemInstruction || '' }] },
-          { role: 'user', parts: [{ text: userPrompt }] },
-        ],
+        contents: userPrompt,
+        config: { ...config, ...(abortSignal ? { abortSignal } : {}) }
       });
-      inputTokens = countResult.totalTokens || 0;
-    } catch (e) {
-      console.warn('countTokens failed, will use usageMetadata:', e);
-    }
 
-    // Yield initial token estimate (exact input, zero output)
-    yield `__TOKEN__${JSON.stringify({ input: inputTokens, output: 0, isEstimate: true })}`;
+      let outputTokens = 0;
+      let totalChars = 0;
+      let groundingSources: Array<{ title: string; uri: string }> = [];
+      let searchEntryPointHtml = '';
 
-    const responseStream = await getAi(userApiKey).models.generateContentStream({
-      model: MODEL_NAME,
-      contents: userPrompt,
-      config: { ...config, ...(abortSignal ? { abortSignal } : {}) }
-    });
-
-    let outputTokens = 0;
-    let totalChars = 0;
-    let groundingSources: Array<{ title: string; uri: string }> = [];
-    let searchEntryPointHtml = '';
-
-    for await (const chunk of responseStream) {
-      // Collect token usage from response metadata (populated on final chunk)
-      if (chunk.usageMetadata) {
-        if (chunk.usageMetadata.promptTokenCount) {
-          inputTokens = chunk.usageMetadata.promptTokenCount;
+      for await (const chunk of responseStream) {
+        if (abortSignal?.aborted) break;
+        // Collect token usage from response metadata (populated on final chunk)
+        if (chunk.usageMetadata) {
+          if (chunk.usageMetadata.promptTokenCount) {
+            inputTokens = chunk.usageMetadata.promptTokenCount;
+          }
+          outputTokens = chunk.usageMetadata.candidatesTokenCount || 0;
         }
-        outputTokens = chunk.usageMetadata.candidatesTokenCount || 0;
+        // Capture grounding metadata (typically on the final chunk)
+        const groundingMeta = chunk.candidates?.[0]?.groundingMetadata;
+        if (groundingMeta?.groundingChunks?.length) {
+          groundingSources = groundingMeta.groundingChunks
+            .filter((c: any) => c.web?.uri && c.web?.title)
+            .map((c: any) => ({ title: c.web.title, uri: c.web.uri }));
+        }
+        if (groundingMeta?.searchEntryPoint?.renderedContent) {
+          searchEntryPointHtml = groundingMeta.searchEntryPoint.renderedContent;
+        }
+        if (chunk.text) {
+          totalChars += chunk.text.length;
+          // Estimate output tokens: ~4 chars per token
+          const estimatedOutput = Math.round(totalChars / 4);
+          yield `__TOKEN__${JSON.stringify({ input: inputTokens, output: estimatedOutput, isEstimate: true })}`;
+          yield chunk.text;
+        }
       }
-      // Capture grounding metadata (typically on the final chunk)
-      const groundingMeta = chunk.candidates?.[0]?.groundingMetadata;
-      if (groundingMeta?.groundingChunks?.length) {
-        groundingSources = groundingMeta.groundingChunks
-          .filter((c: any) => c.web?.uri && c.web?.title)
-          .map((c: any) => ({ title: c.web.title, uri: c.web.uri }));
+
+      // Yield final confirmed metadata (exact values from usageMetadata)
+      yield `__META__${JSON.stringify({ tokenCount: { input: inputTokens, output: outputTokens }, groundingSources, searchEntryPointHtml })}`;
+      
+      return; // Success! Exit loop
+
+    } catch (e: any) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      const isQuotaError = errorMsg.includes('429') || errorMsg.includes('RESOURCE_EXHAUSTED');
+      
+      // If it's a quota error and we're using a system key (not a user override)
+      if (isQuotaError && !userApiKey && currentKey) {
+        markKeyAsExhausted(currentKey);
+        attempt++;
+        if (attempt < maxAttempts) {
+          console.warn(`Key rotation triggered (Attempt ${attempt}/${maxAttempts}). Trying next key...`);
+          continue; 
+        }
       }
-      if (groundingMeta?.searchEntryPoint?.renderedContent) {
-        searchEntryPointHtml = groundingMeta.searchEntryPoint.renderedContent;
-      }
-      if (chunk.text) {
-        totalChars += chunk.text.length;
-        // Estimate output tokens: ~4 chars per token
-        const estimatedOutput = Math.round(totalChars / 4);
-        yield `__TOKEN__${JSON.stringify({ input: inputTokens, output: estimatedOutput, isEstimate: true })}`;
-        yield chunk.text;
-      }
+      
+      // If not retryable or out of attempts, throw for App.tsx to catch
+      throw e;
     }
-
-    // Yield final confirmed metadata (exact values from usageMetadata)
-    yield `__META__${JSON.stringify({ tokenCount: { input: inputTokens, output: outputTokens }, groundingSources, searchEntryPointHtml })}`;
-
-  } catch (error) {
-    console.error("Gemini Stream Error:", error);
-    yield `<div class="p-8 text-red-600"><h1>Generation Error</h1><p>${error}</p></div>`;
   }
 }
