@@ -51,7 +51,7 @@ function getAi(userKey?: string, strictUserKey: boolean = false) {
   const keyToUse = availableKey || systemKeys[0];
 
   if (!keyToUse) {
-    throw new Error("No API keys configured. Set VITE_GEMINI_API_KEY_1 in Cloudflare.");
+    throw new Error("No Gemini API keys found. Please add your key in the Settings (⋮) menu or set VITE_GEMINI_API_KEY_1 in your environment.");
   }
 
   currentKey = keyToUse;

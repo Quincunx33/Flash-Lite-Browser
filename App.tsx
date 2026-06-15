@@ -88,6 +88,7 @@ const App: React.FC = () => {
     let titleExtracted = false;
 
     try {
+      console.log('Generating with prompt:', prompt);
       const stream = streamPageGeneration(
         prompt, 
         currentHtml, 
@@ -145,7 +146,9 @@ const App: React.FC = () => {
         }));
       }
 
-      if (controller.signal.aborted) return;
+      if (fullHtml.length === 0 && !controller.signal.aborted) {
+        throw new Error("Gemini returned an empty response. This might be due to safety filters or a temporary connection issue. Try a more descriptive prompt.");
+      }
 
       const finalBreadcrumb = titleExtracted
         ? (extractTitleFromHtml(fullHtml) || fallbackBreadcrumb)
@@ -451,8 +454,8 @@ const App: React.FC = () => {
     setActiveTabIndex(index);
   }, []);
 
-  const isNewTab = activeTab.currentIndex === -1 && !activeTab.loading;
-  const displayContent = activeTab.loading ? activeTab.generatedContent : (currentPage?.html || '');
+  const isNewTab = activeTab.history.length === 0 && !activeTab.loading && !activeTab.generatedContent;
+  const displayContent = activeTab.loading ? activeTab.generatedContent : (currentPage?.html || activeTab.generatedContent || '');
 
   return (
     <OuterFrame
