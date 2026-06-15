@@ -5,6 +5,8 @@ interface SandboxProps {
   htmlContent: string;
   onNavigate: (href: string, linkText: string, formState?: FormFieldState[]) => void;
   onAction: (intent: string, payload?: string, formState?: FormFieldState[]) => void;
+  selectionMode?: boolean;
+  onElementSelected?: (data: { html: string; tag: string; text: string }) => void;
 }
 
 // Static shell HTML loaded via srcdoc — runs in an opaque origin (no allow-same-origin).
@@ -50,24 +52,59 @@ const SHELL_HTML = `<!DOCTYPE html>
         performAction: (intent, payload) => {
           const formState = getFormState();
           window.parent.postMessage({ type: 'ACTION', intent, payload, formState }, '*');
+        },
+        selectElement: (elementData) => {
+          window.parent.postMessage({ type: 'ELEMENT_SELECTED', ...elementData }, '*');
         }
       };
 
-      // Disable autocomplete on all form fields
-      function disableAutocomplete(root) {
-        root.querySelectorAll('input, textarea, select').forEach(el => {
-          el.setAttribute('autocomplete', 'off');
-        });
-      }
-      // Watch for dynamically added inputs
-      new MutationObserver((mutations) => {
-        mutations.forEach(m => m.addedNodes.forEach(node => {
-          if (node.nodeType === 1) disableAutocomplete(node.parentElement || node);
-        }));
-      }).observe(document.documentElement, { childList: true, subtree: true });
+      // Selection highlighting logic
+      let selectionMode = false;
+      let hoveredEl = null;
+      const highlight = document.createElement('div');
+      highlight.id = 'flash-lite-highlight';
+      highlight.style.pointerEvents = 'none';
+      highlight.style.position = 'fixed';
+      highlight.style.border = '2px solid #8ab4f8';
+      highlight.style.backgroundColor = 'rgba(138, 180, 248, 0.1)';
+      highlight.style.zIndex = '999999';
+      highlight.style.display = 'none';
+      highlight.style.borderRadius = '4px';
 
-      // Intercept links
+      document.addEventListener('mouseover', (e) => {
+        if (!selectionMode) return;
+        const el = e.target.closest('div, section, article, header, footer, aside, main, nav, p, h1, h2, h3, h4, h5, h6, ul, ol, li, a, button, img');
+        if (el && el !== document.body && el !== highlight) {
+          const rect = el.getBoundingClientRect();
+          highlight.style.top = rect.top + 'px';
+          highlight.style.left = rect.left + 'px';
+          highlight.style.width = rect.width + 'px';
+          highlight.style.height = rect.height + 'px';
+          highlight.style.display = 'block';
+          hoveredEl = el;
+        } else {
+          highlight.style.display = 'none';
+          hoveredEl = null;
+        }
+      });
+
       document.addEventListener('click', (e) => {
+        if (selectionMode) {
+          e.preventDefault();
+          e.stopPropagation();
+          const el = e.target.closest('div, section, article, header, footer, aside, main, nav, p, h1, h2, h3, h4, h5, h6, ul, ol, li, a, button, img');
+          if (el && el !== document.body) {
+            FlashLiteAPI.selectElement({
+              html: el.outerHTML,
+              tag: el.tagName.toLowerCase(),
+              text: el.innerText.substring(0, 100)
+            });
+            selectionMode = false;
+            highlight.style.display = 'none';
+          }
+          return;
+        }
+        
         const link = e.target.closest('a');
         if (link && !link.onclick && !link.getAttribute('onclick')) {
           e.preventDefault();
@@ -91,6 +128,20 @@ const SHELL_HTML = `<!DOCTYPE html>
         });
       }
 
+      // Disable autocomplete on all form fields
+      function disableAutocomplete(root) {
+        root.querySelectorAll('input, textarea, select').forEach(el => {
+          el.setAttribute('autocomplete', 'off');
+        });
+      }
+      
+      // Watch for dynamically added inputs
+      new MutationObserver((mutations) => {
+        mutations.forEach(m => m.addedNodes.forEach(node => {
+          if (node.nodeType === 1) disableAutocomplete(node.parentElement || node);
+        }));
+      }).observe(document.documentElement, { childList: true, subtree: true });
+
       // Listen for content updates from parent
       window.addEventListener('message', (e) => {
         if (e.data?.type === 'CONTENT_UPDATE') {
@@ -98,6 +149,9 @@ const SHELL_HTML = `<!DOCTYPE html>
           document.body.className = 'min-h-screen ' + (e.data.bodyClasses || '');
           document.body.setAttribute('style', e.data.bodyStyle || '');
           document.documentElement.style.colorScheme = e.data.colorScheme || 'light';
+          
+          document.body.appendChild(highlight); // Re-attach highlight
+          disableAutocomplete(document.body);
 
           // Inject font links (only pre-validated Google Fonts hrefs)
           document.head.querySelectorAll('link[data-flash-lite-font]').forEach(el => el.remove());
@@ -111,6 +165,13 @@ const SHELL_HTML = `<!DOCTYPE html>
 
           // After content + fonts are ready, hide any broken icon ligatures
           document.fonts.ready.then(() => hideBrokenIcons());
+        }
+
+        if (e.data?.type === 'SET_SELECTION_MODE') {
+          selectionMode = e.data.active;
+          if (!selectionMode) {
+            highlight.style.display = 'none';
+          }
         }
       });
 
@@ -152,15 +213,16 @@ const SHELL_HTML = `<!DOCTYPE html>
     </style>
   </head>
   <body class="min-h-screen" style="background-color: #111;"></body>
-</html>`;
+</html>
+`;
 
-export const Sandbox: React.FC<SandboxProps> = ({ htmlContent, onNavigate, onAction }) => {
+export const Sandbox: React.FC<SandboxProps> = ({ htmlContent, onNavigate, onAction, selectionMode = false, onElementSelected }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const iframeReadyRef = useRef(false);
   const pendingContentRef = useRef<any>(null);
 
   // Send content update to iframe via postMessage
-  const sendContentUpdate = (message: any) => {
+  const sendToIframe = (message: any) => {
     if (iframeReadyRef.current && iframeRef.current?.contentWindow) {
       iframeRef.current.contentWindow.postMessage(message, '*');
     } else {
@@ -168,16 +230,19 @@ export const Sandbox: React.FC<SandboxProps> = ({ htmlContent, onNavigate, onAct
     }
   };
 
+  // Sync selection mode
+  useEffect(() => {
+    sendToIframe({ type: 'SET_SELECTION_MODE', active: selectionMode });
+  }, [selectionMode]);
+
   // Stream Content Updates
   useEffect(() => {
     if (!htmlContent) return;
 
     let cleanContent = htmlContent;
-
-    // Detect color scheme from meta tag before stripping head
+    
+    // ... extract metadata ...
     const isDark = /<meta\s+name=["']color-scheme["']\s+content=["']dark["']/i.test(htmlContent);
-
-    // Extract <link> tags from <head> — only allow Google Fonts URLs
     const headMatch = htmlContent.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
     const fontHrefs: string[] = [];
     if (headMatch) {
@@ -187,7 +252,6 @@ export const Sandbox: React.FC<SandboxProps> = ({ htmlContent, onNavigate, onAct
           const hrefMatch = tag.match(/href="([^"]+)"/i) || tag.match(/href='([^']+)'/i);
           if (hrefMatch) {
             const href = hrefMatch[1];
-            // Only allow Google Fonts — block all other external stylesheets
             if (href.startsWith('https://fonts.googleapis.com/')) {
               fontHrefs.push(href);
             }
@@ -195,21 +259,15 @@ export const Sandbox: React.FC<SandboxProps> = ({ htmlContent, onNavigate, onAct
         });
       }
     }
-
-    // Extract body class attribute (for Tailwind classes)
     const bodyClassMatch = htmlContent.match(/<body[^>]*class="([^"]*)"/i) || htmlContent.match(/<body[^>]*class='([^']*)'/i);
     const bodyClasses = bodyClassMatch ? bodyClassMatch[1] : '';
-
-    // Extract body inline style (for font-family etc.)
     const bodyStyleMatch = htmlContent.match(/<body[^>]*style="([^"]*)"/i) || htmlContent.match(/<body[^>]*style='([^']*)'/i);
     const bodyInlineStyle = bodyStyleMatch ? bodyStyleMatch[1] : '';
 
-    // Extract just the body content from a full HTML document
     const bodyMatch = cleanContent.match(/<body[^>]*>([\s\S]*)<\/body>/i);
     if (bodyMatch) {
       cleanContent = bodyMatch[1];
     } else {
-      // Fallback: strip any stray tags from fragment-style output
       cleanContent = cleanContent
         .replace(/<\/?html[^>]*>/gi, '')
         .replace(/<head>[\s\S]*?<\/head>/gi, '')
@@ -218,7 +276,7 @@ export const Sandbox: React.FC<SandboxProps> = ({ htmlContent, onNavigate, onAct
         .replace(/<\/?body[^>]*>/gi, '');
     }
 
-    sendContentUpdate({
+    sendToIframe({
       type: 'CONTENT_UPDATE',
       html: cleanContent,
       bodyClasses,
@@ -227,7 +285,6 @@ export const Sandbox: React.FC<SandboxProps> = ({ htmlContent, onNavigate, onAct
       linkTags: fontHrefs,
     });
 
-    // Update the iframe element's own background to match (prevents white flash)
     if (iframeRef.current) {
       iframeRef.current.style.background = isDark ? '#111' : '#fff';
     }
@@ -236,7 +293,6 @@ export const Sandbox: React.FC<SandboxProps> = ({ htmlContent, onNavigate, onAct
   // Handle Messages from iframe
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      // Only accept messages from our iframe
       if (event.source !== iframeRef.current?.contentWindow) return;
 
       if (event.data?.type === 'SANDBOX_READY') {
@@ -245,6 +301,17 @@ export const Sandbox: React.FC<SandboxProps> = ({ htmlContent, onNavigate, onAct
           iframeRef.current?.contentWindow?.postMessage(pendingContentRef.current, '*');
           pendingContentRef.current = null;
         }
+        // Send current selection mode after ready
+        iframeRef.current?.contentWindow?.postMessage({ type: 'SET_SELECTION_MODE', active: selectionMode }, '*');
+        return;
+      }
+
+      if (event.data?.type === 'ELEMENT_SELECTED') {
+        onElementSelected?.({
+          html: event.data.html,
+          tag: event.data.tag,
+          text: event.data.text
+        });
         return;
       }
 

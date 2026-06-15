@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { OuterFrame } from './components/OuterFrame';
 import { BrowserShell } from './components/BrowserShell';
 import { Sandbox } from './components/Sandbox';
@@ -7,6 +7,7 @@ import { DisclaimerPopup } from './components/DisclaimerPopup';
 import { streamPageGeneration } from './services/geminiService';
 import { Page, Breadcrumb, TokenCount, FormFieldState, GroundingSource, Tab, createTab } from './types';
 import { siteNameFromPrompt, parsePageFromHref, extractTitleFromHtml } from './utils/urlHelpers';
+import { savePage, getSavedPages, SavedPage, deleteSavedPage } from './services/db';
 
 const App: React.FC = () => {
   // Tab state
@@ -19,25 +20,52 @@ const App: React.FC = () => {
     return localStorage.getItem('GEMINI_API_KEY_OVERRIDE') || '';
   });
 
-  const handleSaveApiKey = useCallback((key: string) => {
-    setUserApiKey(key);
-    if (key) {
-      localStorage.setItem('GEMINI_API_KEY_OVERRIDE', key);
-    } else {
-      localStorage.removeItem('GEMINI_API_KEY_OVERRIDE');
-    }
-  }, []);
+  // Saved Pages state
+  const [savedPages, setSavedPages] = useState<SavedPage[]>([]);
+  const [showLibrary, setShowLibrary] = useState(false);
 
   // Abort controllers keyed by tab id
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
 
-  const activeTab = tabs[activeTabIndex];
-  const currentPage = activeTab.currentIndex >= 0 ? activeTab.history[activeTab.currentIndex] : null;
+  // Selection state
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedElement, setSelectedElement] = useState<{ html: string; tag: string; text: string } | null>(null);
+  const [refinementPrompt, setRefinementPrompt] = useState('');
 
   // -- Helper to update the active tab immutably --
   const updateTab = useCallback((tabIndex: number, updater: (tab: Tab) => Tab) => {
     setTabs(prev => prev.map((t, i) => i === tabIndex ? updater(t) : t));
   }, []);
+
+  const activeTab = tabs[activeTabIndex];
+  const currentPage = activeTab.currentIndex >= 0 ? activeTab.history[activeTab.currentIndex] : null;
+
+  const loadSavedPages = useCallback(async () => {
+    try {
+      const pages = await getSavedPages();
+      setSavedPages(pages);
+    } catch (e) {
+      console.error('Failed to load saved pages', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSavedPages();
+  }, [loadSavedPages]);
+
+  const handleSaveToDB = useCallback(async (page: Page) => {
+    const id = btoa(page.breadcrumb.sitename + page.breadcrumb.page + page.timestamp).substring(0, 10);
+    const saved: SavedPage = {
+      id,
+      name: page.breadcrumb.page || 'Home',
+      sitename: page.breadcrumb.sitename,
+      html: page.html,
+      prompt: page.prompt,
+      timestamp: page.timestamp
+    };
+    await savePage(saved);
+    loadSavedPages();
+  }, [loadSavedPages]);
 
   // -- Core Generation Logic --
   const generate = useCallback(async (
@@ -50,6 +78,9 @@ const App: React.FC = () => {
     const tabIndex = activeTabIndex;
     const tabId = tabs[tabIndex].id;
 
+    // Abort controllers keyed by tab id
+    if (!abortControllersRef.current) abortControllersRef.current = new Map();
+    
     // Abort any in-flight request for this tab
     const existingController = abortControllersRef.current.get(tabId);
     if (existingController) {
@@ -207,6 +238,8 @@ const App: React.FC = () => {
       updateTab(tabIndex, tab => {
         if (pushHistory) {
           const newHistory = [...tab.history.slice(0, tab.currentIndex + 1), newPage];
+          // Auto-save generated pages
+          handleSaveToDB(newPage);
           return {
             ...tab,
             history: newHistory,
@@ -278,6 +311,8 @@ const App: React.FC = () => {
         prompt,
         contextHtml: currentHtml,
         isGrounded,
+        groundingSources: [],
+        searchEntryPointHtml: '',
       };
 
       updateTab(tabIndex, tab => {
@@ -301,7 +336,71 @@ const App: React.FC = () => {
         abortControllersRef.current.delete(tabId);
       }
     }
-  }, [isGrounded, activeTabIndex, tabs, updateTab]);
+  }, [isGrounded, activeTabIndex, tabs, updateTab, userApiKey, handleSaveToDB]);
+
+  const handleDeleteSaved = useCallback(async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    await deleteSavedPage(id);
+    loadSavedPages();
+  }, [loadSavedPages]);
+
+  const handleLoadSaved = useCallback((saved: SavedPage) => {
+    const tabIndex = activeTabIndex;
+    const newPage: Page = {
+      html: saved.html,
+      breadcrumb: { sitename: saved.sitename, page: saved.name },
+      scrollPosition: 0,
+      timestamp: Date.now(),
+      tokenCount: null,
+      prompt: saved.prompt,
+      contextHtml: null,
+      isGrounded: false,
+      groundingSources: [],
+      searchEntryPointHtml: ''
+    };
+
+    updateTab(tabIndex, tab => {
+      const newHistory = [...tab.history.slice(0, tab.currentIndex + 1), newPage];
+      return {
+        ...tab,
+        history: newHistory,
+        currentIndex: newHistory.length - 1,
+        generatedContent: saved.html,
+        breadcrumb: newPage.breadcrumb,
+      };
+    });
+    setShowLibrary(false);
+  }, [activeTabIndex, updateTab]);
+
+  const handleElementSelected = useCallback((data: { html: string; tag: string; text: string }) => {
+    setSelectedElement(data);
+    setSelectionMode(false);
+  }, []);
+
+  const handleRefine = useCallback(() => {
+    if (!selectedElement || !refinementPrompt) return;
+    
+    // Construct refinement prompt
+    const fullPrompt = `Refine this ${selectedElement.tag}: "${selectedElement.text}". \nRefinement instruction: ${refinementPrompt}`;
+    
+    // We treat this like a link click but passing the context of the selected element
+    if (currentPage) {
+      // We pass the full HTML but mark the selected element in the prompt or context
+      generate(fullPrompt, currentPage.html, activeTab.breadcrumb, true);
+    }
+    
+    setSelectedElement(null);
+    setRefinementPrompt('');
+  }, [selectedElement, refinementPrompt, currentPage, activeTab.breadcrumb, generate]);
+
+  const handleSaveApiKey = useCallback((key: string) => {
+    setUserApiKey(key);
+    if (key) {
+      localStorage.setItem('GEMINI_API_KEY_OVERRIDE', key);
+    } else {
+      localStorage.removeItem('GEMINI_API_KEY_OVERRIDE');
+    }
+  }, []);
 
   // -- Stop loading --
   const handleStop = useCallback(() => {
@@ -505,18 +604,286 @@ const App: React.FC = () => {
         htmlContent={displayContent}
         userApiKey={userApiKey}
         onSaveApiKey={handleSaveApiKey}
+        onShowLibrary={() => setShowLibrary(true)}
       >
-        {isNewTab ? (
-          <NewTab onCreatePage={handleCreate} />
-        ) : (
-          <Sandbox
-            htmlContent={displayContent}
-            onNavigate={handleLinkClick}
-            onAction={handleAction}
-          />
-        )}
+        <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column' }}>
+          {isNewTab ? (
+            <NewTab onCreatePage={handleCreate} />
+          ) : (
+            <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column' }}>
+              <Sandbox
+                htmlContent={displayContent}
+                onNavigate={handleLinkClick}
+                onAction={handleAction}
+                selectionMode={selectionMode}
+                onElementSelected={handleElementSelected}
+              />
+
+              {/* Selection Mode Indicator */}
+              {selectionMode && (
+                <div style={{ 
+                  position: 'absolute', 
+                  top: '12px', 
+                  left: '50%', 
+                  transform: 'translateX(-50%)', 
+                  zIndex: 100, 
+                  background: '#8ab4f8', 
+                  color: '#000', 
+                  padding: '8px 16px', 
+                  borderRadius: '24px', 
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  fontWeight: 600,
+                  fontSize: '14px'
+                }}>
+                  <span className="material-symbols-outlined">touch_app</span>
+                  Tap any element to prompt
+                  <button 
+                    onClick={() => setSelectionMode(false)}
+                    style={{ background: 'rgba(0,0,0,0.1)', border: 'none', borderRadius: '50%', width: '20px', height: '20px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyCenter: 'center', padding: 0 }}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Refinement Prompt Bar */}
+              {selectedElement && (
+                <div style={{ 
+                  position: 'absolute', 
+                  bottom: '24px', 
+                  left: '50%', 
+                  transform: 'translateX(-50%)', 
+                  zIndex: 100, 
+                  background: '#1e1e1e', 
+                  border: '1px solid #333',
+                  borderRadius: '16px', 
+                  padding: '16px', 
+                  boxShadow: '0 20px 40px rgba(0,0,0,0.8)',
+                  width: 'calc(100% - 48px)',
+                  maxWidth: '700px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                  animation: 'slideUp 0.3s ease'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#9aa0a6' }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>code</span>
+                    Selected <span style={{ color: '#8ab4f8', fontWeight: 600 }}>&lt;{selectedElement.tag}&gt;</span>
+                  </div>
+                  
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <input 
+                      type="text"
+                      autoFocus
+                      placeholder="How should we change this section?"
+                      value={refinementPrompt}
+                      onChange={e => setRefinementPrompt(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleRefine()}
+                      style={{ 
+                        flex: 1, 
+                        background: '#2a2a2a', 
+                        border: '1px solid #444', 
+                        borderRadius: '8px', 
+                        padding: '10px 16px', 
+                        color: '#fff', 
+                        fontSize: '14px',
+                        outline: 'none'
+                      }}
+                    />
+                    <button 
+                      onClick={handleRefine}
+                      style={{ 
+                        background: '#8ab4f8', 
+                        color: '#000', 
+                        border: 'none', 
+                        borderRadius: '8px', 
+                        padding: '0 20px', 
+                        fontWeight: 600, 
+                        cursor: 'pointer' 
+                      }}
+                    >
+                      Update
+                    </button>
+                    <button 
+                      onClick={() => setSelectedElement(null)}
+                      style={{ 
+                        background: '#333', 
+                        color: '#fff', 
+                        border: 'none', 
+                        borderRadius: '8px', 
+                        padding: '0 12px', 
+                        cursor: 'pointer' 
+                      }}
+                    >
+                      <span className="material-symbols-outlined" style={{ marginTop: '4px' }}>close</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Tap to Prompt Toggle Button */}
+              {!activeTab.loading && !selectionMode && !selectedElement && (
+                <button 
+                  onClick={() => setSelectionMode(true)}
+                  style={{ 
+                    position: 'absolute', 
+                    bottom: '24px', 
+                    right: '24px', 
+                    zIndex: 99, 
+                    background: '#8ab4f8', 
+                    color: '#000', 
+                    width: '56px', 
+                    height: '56px', 
+                    borderRadius: '28px', 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'center', 
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                    cursor: 'pointer',
+                    border: 'none',
+                    transition: 'all 0.2s ease'
+                  }}
+                  title="Tap to Prompt"
+                  onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.05)'}
+                  onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+                >
+                  <span className="material-symbols-outlined">touch_app</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </BrowserShell>
       <DisclaimerPopup />
+
+      {/* Library Modal */}
+      {showLibrary && (
+        <div 
+          onClick={() => setShowLibrary(false)}
+          style={{ 
+            position: 'fixed', 
+            top: 0, 
+            left: 0, 
+            right: 0, 
+            bottom: 0, 
+            background: 'rgba(0,0,0,0.85)', 
+            zIndex: 10000, 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center',
+            backdropFilter: 'blur(5px)',
+            animation: 'fadeIn 0.2s ease'
+          }}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            style={{ 
+              width: '90%', 
+              maxWidth: '800px', 
+              maxHeight: '80vh', 
+              background: '#1a1a1a', 
+              border: '1px solid #333', 
+              borderRadius: '24px', 
+              display: 'flex', 
+              flexDirection: 'column', 
+              overflow: 'hidden',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+              animation: 'scaleIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)'
+            }}
+          >
+            <div style={{ padding: '24px', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#202020' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span className="material-symbols-outlined" style={{ color: '#8ab4f8' }}>folder_special</span>
+                <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 500, color: '#fff' }}>My Library</h2>
+                <span style={{ background: '#333', padding: '2px 8px', borderRadius: '12px', fontSize: '12px', color: '#9aa0a6' }}>{savedPages.length} pages</span>
+              </div>
+              <button 
+                onClick={() => setShowLibrary(false)}
+                style={{ background: '#333', border: 'none', borderRadius: '50%', width: '36px', height: '36px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            
+            <div style={{ padding: '24px', overflowY: 'auto', flex: 1 }}>
+              {savedPages.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '60px 0', color: '#5f6368' }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: '48px', marginBottom: '16px' }}>drafts</span>
+                  <p>No saved pages yet.</p>
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '20px' }}>
+                  {savedPages.map(page => (
+                    <div 
+                      key={page.id} 
+                      onClick={() => handleLoadSaved(page)}
+                      style={{ 
+                        background: '#252525', 
+                        border: '1px solid #333', 
+                        borderRadius: '16px', 
+                        padding: '16px', 
+                        cursor: 'pointer',
+                        transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                        position: 'relative',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px'
+                      }}
+                      className="library-card"
+                    >
+                      <div style={{ fontSize: '15px', fontWeight: 600, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{page.sitename}</div>
+                      <div style={{ fontSize: '13px', color: '#9aa0a6', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{page.name}</div>
+                      <div style={{ fontSize: '11px', color: '#5f6368', marginTop: '4px' }}>{new Date(page.timestamp).toLocaleDateString()}</div>
+                      
+                      <button 
+                        onClick={(e) => handleDeleteSaved(page.id, e)}
+                        className="delete-btn"
+                        style={{ position: 'absolute', top: '12px', right: '12px', background: 'rgba(0,0,0,0.3)', border: 'none', borderRadius: '50%', width: '28px', height: '28px', color: '#f28b82', cursor: 'pointer', opacity: 0, transition: 'opacity 0.2s' }}
+                      >
+                        <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>delete</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      
+      <style>{`
+        .library-card:hover {
+          background: #2a2a2a !important;
+          border-color: #8ab4f8 !important;
+          transform: translateY(-2px);
+          box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+        }
+        .library-card:hover .delete-btn {
+          opacity: 1 !important;
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes scaleIn {
+          from { transform: scale(0.95); opacity: 0; }
+          to { transform: scale(1); opacity: 1; }
+        }
+        @keyframes slideUp {
+          from { transform: translate(-50%, 20px); opacity: 0; }
+          to { transform: translate(-50%, 0); opacity: 1; }
+        }
+        .rotating {
+          animation: rotate 2s linear infinite;
+        }
+        @keyframes rotate {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
     </OuterFrame>
   );
 };

@@ -27,6 +27,7 @@ interface BrowserShellProps {
   htmlContent?: string;
   userApiKey?: string;
   onSaveApiKey?: (key: string) => void;
+  onShowLibrary?: () => void;
 }
 
 export const BrowserShell: React.FC<BrowserShellProps> = ({
@@ -54,6 +55,7 @@ export const BrowserShell: React.FC<BrowserShellProps> = ({
   htmlContent,
   userApiKey,
   onSaveApiKey,
+  onShowLibrary,
 }) => {
   const shellRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -143,6 +145,7 @@ export const BrowserShell: React.FC<BrowserShellProps> = ({
         htmlContent={htmlContent}
         userApiKey={userApiKey}
         onSaveApiKey={onSaveApiKey}
+        onShowLibrary={onShowLibrary}
       />
 
       {/* Viewport */}

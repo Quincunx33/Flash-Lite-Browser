@@ -19,6 +19,7 @@ interface AddressBarProps {
   htmlContent?: string;
   userApiKey?: string;
   onSaveApiKey?: (key: string) => void;
+  onShowLibrary?: () => void;
 }
 
 export const AddressBar: React.FC<AddressBarProps> = ({
@@ -38,6 +39,7 @@ export const AddressBar: React.FC<AddressBarProps> = ({
   htmlContent,
   userApiKey = '',
   onSaveApiKey,
+  onShowLibrary,
 }) => {
   const displayText = breadcrumbToDisplay(breadcrumb);
   const [inputVal, setInputVal] = useState(displayText);
@@ -299,6 +301,24 @@ export const AddressBar: React.FC<AddressBarProps> = ({
                 <div className="toggle-thumb" />
               </div>
             </label>
+
+            <div style={{ height: '1px', background: '#3c4043', margin: '8px 0' }} />
+            
+            <button
+              className="dropdown-menu-item w-full text-left hover:bg-[#35363a] transition-colors"
+              style={{ width: '100%', background: 'transparent', textAlign: 'left', cursor: 'pointer', border: 'none', display: 'flex' }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onShowLibrary?.();
+                setMenuOpen(false);
+              }}
+              role="menuitem"
+            >
+              <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#8ab4f8' }}>folder_special</span>
+                <span>My Library</span>
+              </span>
+            </button>
 
             <div style={{ height: '1px', background: '#3c4043', margin: '8px 0' }} />
             
