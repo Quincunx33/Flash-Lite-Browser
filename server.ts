@@ -14,23 +14,35 @@ app.use(express.json());
 let exhaustedKeys = new Set<string>();
 
 function getApiKey(userKey?: string, strictUserKey: boolean = false) {
-  // 1. User provided key in UI
-  if (userKey && userKey.length > 5) return userKey;
+  // 1. User provided key from browser (Settings menu)
+  if (userKey && userKey.length > 5) {
+    console.log("Using custom user-provided API key from browser.");
+    return userKey;
+  }
   
-  // 2. Strict mode check
-  if (strictUserKey) return null;
+  if (strictUserKey) {
+    console.log("Strict mode active: No user key provided.");
+    return null;
+  }
 
-  // 3. System Pool (as requested: GEMINI_API_KEY_1, etc.)
-  const systemKeys = [
+  // 2. System Pool (checked in order)
+  const keys = [
     process.env.GEMINI_API_KEY_1,
     process.env.GEMINI_API_KEY_2,
     process.env.GEMINI_API_KEY_3,
     process.env.GEMINI_API_KEY_4,
     process.env.GEMINI_API_KEY
-  ].filter(k => k && k.trim() !== "" && k !== "undefined");
+  ].filter(Boolean) as string[];
 
-  const availableKey = systemKeys.find(k => !exhaustedKeys.has(k!));
-  return availableKey || systemKeys[0] || null;
+  console.log(`Found ${keys.length} system API keys in environment.`);
+
+  const availableKey = keys.find(k => !exhaustedKeys.has(k));
+  if (availableKey) {
+    return availableKey;
+  }
+
+  // Backup: if all keys exhausted, just use the first one and hope for the best
+  return keys[0] || null;
 }
 
 const SYSTEM_PROMPT = `
@@ -39,7 +51,7 @@ You generate complete, functional HTML documents using Tailwind CSS and Material
 Return ONLY the HTML code.
 `;
 
-const MODEL_NAME = 'gemini-3.1-flash-lite-preview';
+const MODEL_NAME = 'gemini-1.5-flash-latest';
 
 // --- API Endpoints ---
 app.post("/api/generate", async (req, res) => {

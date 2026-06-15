@@ -221,55 +221,15 @@ const App: React.FC = () => {
       updateTab(tabIndex, tab => ({
         ...tab,
         breadcrumb: fallbackBreadcrumb,
-        generatedContent: `<div class="p-10 bg-white text-black font-sans leading-normal">
-          <div class="max-w-2xl mx-auto">
-            <div class="flex items-center gap-3 mb-6">
-              <span class="material-symbols-outlined text-4xl text-red-600">error</span>
-              <h1 class="text-3xl font-bold tracking-tight">${isQuotaError ? 'Quota Exceeded' : 'Generation Error'}</h1>
-            </div>
-            
-            <p class="text-lg mb-8 text-gray-700">
-              ${isQuotaError 
-                ? 'The global Gemini API key has reached its free usage limit. To continue browsing without interruption, you can use your own free individual key.' 
-                : displayErrorMessage}
-            </p>
-
-            ${isQuotaError ? `
-            <div class="bg-indigo-50 border border-indigo-100 p-8 rounded-2xl mb-8 shadow-sm">
-              <h2 class="text-xl font-bold text-indigo-900 mb-4 flex items-center gap-2">
-                <span class="material-symbols-outlined">key</span>
-                How to add your own key:
-              </h2>
-              <ol class="space-y-4 text-indigo-800">
-                <li class="flex gap-3">
-                  <span class="flex-shrink-0 w-6 h-6 bg-indigo-200 text-indigo-800 rounded-full flex items-center justify-center text-sm font-bold">1</span>
-                  <span>Get a free key from <a href="https://aistudio.google.com/app/apikey" target="_blank" class="font-bold underline decoration-indigo-300 hover:text-indigo-600">Google AI Studio</a>.</span>
-                </li>
-                <li class="flex gap-3">
-                  <span class="flex-shrink-0 w-6 h-6 bg-indigo-200 text-indigo-800 rounded-full flex items-center justify-center text-sm font-bold">2</span>
-                  <span>Click the <b>three dots (⋮)</b> in the top right of this browser's address bar.</span>
-                </li>
-                <li class="flex gap-3">
-                  <span class="flex-shrink-0 w-6 h-6 bg-indigo-200 text-indigo-800 rounded-full flex items-center justify-center text-sm font-bold">3</span>
-                  <span>Paste it into the <b>Gemini API Key</b> field and press save.</span>
-                </li>
-              </ol>
-            </div>
-            ` : `
-            <div class="p-6 bg-gray-50 rounded-2xl border border-gray-200 font-mono text-sm break-all mb-8 shadow-inner">
-              ${errorMessage}
-            </div>
-            `}
-
-            <div class="flex gap-3">
-              <button onclick="window.location.reload()" class="px-8 py-4 bg-gray-900 text-white rounded-2xl font-bold hover:bg-black transition-all active:scale-[0.98] shadow-lg shadow-gray-200">
-                Refresh Page
-              </button>
-              <button onclick="window.parent.postMessage('open_settings', '*')" class="px-8 py-4 bg-white border border-gray-200 text-gray-700 rounded-2xl font-bold hover:bg-gray-50 transition-all active:scale-[0.98]">
-                Close Browser
-              </button>
-            </div>
+        generatedContent: `<div style="padding: 40px; font-family: sans-serif; background: white; color: black;">
+          <h1 style="color: #d32f2f; margin-bottom: 20px;">Generation Error</h1>
+          <p style="font-size: 18px; margin-bottom: 20px;">${displayErrorMessage}</p>
+          <div style="padding: 15px; background: #f5f5f5; border-radius: 8px; font-family: monospace; word-break: break-all; margin-bottom: 20px;">
+            ${errorMessage}
           </div>
+          <button onclick="window.location.reload()" style="padding: 12px 24px; background: #333; color: white; border: none; border-radius: 6px; cursor: pointer;">
+            Refresh Page
+          </button>
         </div>`,
       }));
     } finally {

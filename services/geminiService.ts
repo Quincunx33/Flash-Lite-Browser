@@ -25,8 +25,14 @@ export async function* streamPageGeneration(
     });
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error?.message || "Generation failed.");
+      let errorMessage = "Generation failed.";
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.error?.message || errorMessage;
+      } catch (e) {
+        errorMessage = `Server error (${response.status}): ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
     }
 
     const reader = response.body?.getReader();
@@ -38,8 +44,13 @@ export async function* streamPageGeneration(
       if (done) break;
       
       const text = decoder.decode(value, { stream: true });
+      if (!text) continue;
+
+      // Handle split chunks that might contain the error marker
       if (text.includes("__ERROR__")) {
-        throw new Error(text.split("__ERROR__")[1]);
+        const parts = text.split("__ERROR__");
+        if (parts[0]) yield parts[0];
+        throw new Error(parts[1] || "Unknown server error");
       }
       yield text;
     }
