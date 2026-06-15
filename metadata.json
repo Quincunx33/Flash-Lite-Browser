@@ -1,6 +1,8 @@
 {
-  "name": "Flash-Lite Browser",
+  "name": "Remix: Flash-Lite Browser",
   "description": "Imagine any website, generated in real-time by Gemini 3.1 Flash-Lite",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

@@ -18,9 +18,6 @@ const App: React.FC = () => {
   const [userApiKey, setUserApiKey] = useState<string>(() => {
     return localStorage.getItem('GEMINI_API_KEY_OVERRIDE') || '';
   });
-  const [useCustomKey, setUseCustomKey] = useState<boolean>(() => {
-    return localStorage.getItem('USE_CUSTOM_KEY') === 'true';
-  });
 
   const handleSaveApiKey = useCallback((key: string) => {
     setUserApiKey(key);
@@ -29,14 +26,6 @@ const App: React.FC = () => {
     } else {
       localStorage.removeItem('GEMINI_API_KEY_OVERRIDE');
     }
-  }, []);
-
-  const handleToggleCustomKey = useCallback(() => {
-    setUseCustomKey(prev => {
-      const next = !prev;
-      localStorage.setItem('USE_CUSTOM_KEY', String(next));
-      return next;
-    });
   }, []);
 
   // Abort controllers keyed by tab id
@@ -72,7 +61,7 @@ const App: React.FC = () => {
     updateTab(tabIndex, tab => ({
       ...tab,
       loading: true,
-      loadingMessage: 'Streaming website from Gemini 3.1 Flash-Lite',
+      loadingMessage: 'Streaming website from Gemini 3.1 Flash',
       generatedContent: '',
       tokenCount: null,
       groundingSources: [],
@@ -88,17 +77,7 @@ const App: React.FC = () => {
     let titleExtracted = false;
 
     try {
-      console.log('Generating with prompt:', prompt);
-      const stream = streamPageGeneration(
-        prompt, 
-        currentHtml, 
-        isGrounded, 
-        controller.signal, 
-        formState, 
-        window.innerWidth <= 768, 
-        useCustomKey ? userApiKey : undefined,
-        useCustomKey
-      );
+      const stream = streamPageGeneration(prompt, currentHtml, isGrounded, controller.signal, formState, window.innerWidth <= 768, userApiKey);
 
       for await (const chunk of stream) {
         if (controller.signal.aborted) break;
@@ -141,14 +120,12 @@ const App: React.FC = () => {
         updateTab(tabIndex, tab => ({
           ...tab,
           generatedContent: currentFullHtml,
-          loadingMessage: 'Streaming website from Gemini 3.1 Flash-Lite',
+          loadingMessage: 'Streaming website from Gemini 3.1 Flash',
           ...(extractedBreadcrumb ? { breadcrumb: extractedBreadcrumb } : {}),
         }));
       }
 
-      if (fullHtml.length === 0 && !controller.signal.aborted) {
-        throw new Error("Gemini returned an empty response. This might be due to safety filters or a temporary connection issue. Try a more descriptive prompt.");
-      }
+      if (controller.signal.aborted) return;
 
       const finalBreadcrumb = titleExtracted
         ? (extractTitleFromHtml(fullHtml) || fallbackBreadcrumb)
@@ -195,41 +172,15 @@ const App: React.FC = () => {
       if (e?.name === 'AbortError' || controller.signal.aborted) return;
       console.error('Generation failed', e);
       const errorMessage = e instanceof Error ? e.message : 'Failed to generate page';
-      
-      let displayErrorMessage = errorMessage;
-      let isQuotaError = false;
-      
-      try {
-        // Try parsing JSON error from Gemini
-        if (errorMessage.startsWith('{')) {
-          const parsed = JSON.parse(errorMessage);
-          if (parsed.error?.message) {
-            displayErrorMessage = parsed.error.message;
-            if (parsed.error.code === 429 || parsed.error.status === 'RESOURCE_EXHAUSTED') {
-              isQuotaError = true;
-            }
-          }
-        }
-      } catch (e) { }
-
-      if (!isQuotaError) {
-        isQuotaError = displayErrorMessage.toLowerCase().includes('quota') || 
-                       displayErrorMessage.toLowerCase().includes('exhausted') || 
-                       displayErrorMessage.includes('429');
-      }
-
       updateTab(tabIndex, tab => ({
         ...tab,
         breadcrumb: fallbackBreadcrumb,
-        generatedContent: `<div style="padding: 40px; font-family: sans-serif; background: white; color: black;">
-          <h1 style="color: #d32f2f; margin-bottom: 20px;">Generation Error</h1>
-          <p style="font-size: 18px; margin-bottom: 20px;">${displayErrorMessage}</p>
-          <div style="padding: 15px; background: #f5f5f5; border-radius: 8px; font-family: monospace; word-break: break-all; margin-bottom: 20px;">
-            ${errorMessage}
+        generatedContent: `<div class="p-10 bg-white text-black">
+          <h1 class="text-2xl font-bold text-red-600 mb-4">Generation Error</h1>
+          <p class="mb-4">${errorMessage}</p>
+          <div class="p-4 bg-gray-100 rounded border border-gray-300 font-mono text-sm">
+            Check your Environment Variables in the Settings menu.
           </div>
-          <button onclick="window.location.reload()" style="padding: 12px 24px; background: #333; color: white; border: none; border-radius: 6px; cursor: pointer;">
-            Refresh Page
-          </button>
         </div>`,
       }));
     } finally {
@@ -242,7 +193,7 @@ const App: React.FC = () => {
         abortControllersRef.current.delete(tabId);
       }
     }
-  }, [isGrounded, activeTabIndex, tabs, updateTab, userApiKey]);
+  }, [isGrounded, activeTabIndex, tabs, updateTab]);
 
   // -- Stop loading --
   const handleStop = useCallback(() => {
@@ -414,8 +365,8 @@ const App: React.FC = () => {
     setActiveTabIndex(index);
   }, []);
 
-  const isNewTab = activeTab.history.length === 0 && !activeTab.loading && !activeTab.generatedContent;
-  const displayContent = activeTab.loading ? activeTab.generatedContent : (currentPage?.html || activeTab.generatedContent || '');
+  const isNewTab = activeTab.currentIndex === -1 && !activeTab.loading;
+  const displayContent = activeTab.loading ? activeTab.generatedContent : (currentPage?.html || '');
 
   return (
     <OuterFrame
@@ -446,8 +397,6 @@ const App: React.FC = () => {
         htmlContent={displayContent}
         userApiKey={userApiKey}
         onSaveApiKey={handleSaveApiKey}
-        useCustomKey={useCustomKey}
-        onToggleCustomKey={handleToggleCustomKey}
       >
         {isNewTab ? (
           <NewTab onCreatePage={handleCreate} />

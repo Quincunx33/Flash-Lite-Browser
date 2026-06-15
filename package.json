@@ -6,13 +6,13 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "start": "node dist/server.cjs"
+    "start": "node dist/server.cjs",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "preview": "vite preview"
   },
   "dependencies": {
     "@google/genai": "^1.35.0",
-    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
-    "cors": "^2.8.6",
     "esbuild": "^0.28.1",
     "express": "^5.2.1",
     "motion": "^12.40.0",
