@@ -230,7 +230,7 @@ export const AddressBar: React.FC<AddressBarProps> = ({
       </div>
 
       {/* Omnibar */}
-      <form onSubmit={handleSubmit} className="omnibar-form">
+      <form onSubmit={handleSubmit} className="omnibar-form" style={{ minWidth: '150px' }}>
         <div className="omnibar-wrapper">
           {isLoading && !inputVal ? (
             <div className="omnibar-loading">{loadingMessage}</div>
@@ -238,14 +238,14 @@ export const AddressBar: React.FC<AddressBarProps> = ({
             <input
               ref={inputRef}
               type="text"
-                autoComplete="off"
+              autoComplete="off"
               value={displayValue}
               onChange={handleChange}
-                onFocus={handleFocus}
-                onBlur={handleBlur}
+              onFocus={handleFocus}
+              onBlur={handleBlur}
               onKeyDown={handleKeyDown}
-                className="omnibar-input"
-                aria-label="Address bar — enter a URL or prompt"
+              className="omnibar-input"
+              aria-label="Address bar — enter a URL or prompt"
             />
           )}
         </div>
@@ -253,24 +253,23 @@ export const AddressBar: React.FC<AddressBarProps> = ({
 
       {/* Download and Copy Actions directly on AddressBar as quick access */}
       {htmlContent && (
-        <div className="flex items-center gap-1" style={{ display: 'flex', gap: '4px' }}>
+        <div className="address-actions" style={{ display: 'flex', gap: '2px', marginLeft: '4px' }}>
           <button
             onClick={handleDownload}
-            className="nav-btn text-[#81c995] hover:text-[#a3e635] transition-colors"
-            style={{ color: '#81c995' }}
+            className="nav-btn action-btn-green"
             title="Download HTML Code"
             aria-label="Download HTML Code"
           >
-            <span className="material-symbols-outlined">download</span>
+            <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>download</span>
           </button>
           <button
             onClick={handleCopy}
-            className="nav-btn transition-colors"
-            style={{ color: copied ? '#81c995' : '#9aa0a6' }}
+            className="nav-btn action-btn-gray"
+            style={{ color: copied ? '#81c995' : undefined }}
             title={copied ? "Copied!" : "Copy HTML Code"}
             aria-label="Copy HTML Code"
           >
-            <span className="material-symbols-outlined">{copied ? "check" : "content_copy"}</span>
+            <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>{copied ? "check" : "content_copy"}</span>
           </button>
         </div>
       )}

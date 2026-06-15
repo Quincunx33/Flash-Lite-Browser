@@ -75,6 +75,7 @@ const App: React.FC = () => {
     let pageGroundingSources: GroundingSource[] = [];
     let pageSearchEntryPointHtml = '';
     let titleExtracted = false;
+    let streamBuffer = '';
 
     try {
       const stream = streamPageGeneration(prompt, currentHtml, isGrounded, controller.signal, formState, window.innerWidth <= 768, userApiKey);
@@ -82,45 +83,104 @@ const App: React.FC = () => {
       for await (const chunk of stream) {
         if (controller.signal.aborted) break;
 
-        // Live token count updates (estimated during streaming)
-        if (chunk.startsWith('__TOKEN__')) {
+        streamBuffer += chunk;
+
+        // Process markers in the buffer
+        let searchIndex = 0;
+        while (true) {
+          // Look for any marker start
+          const tokenStart = streamBuffer.indexOf('__TOKEN__', searchIndex);
+          const metaStart = streamBuffer.indexOf('__META__', searchIndex);
+          
+          const firstStart = (tokenStart !== -1 && (metaStart === -1 || tokenStart < metaStart)) 
+            ? { start: tokenStart, type: 'TOKEN' as const }
+            : (metaStart !== -1) 
+              ? { start: metaStart, type: 'META' as const }
+              : null;
+
+          if (!firstStart) break;
+
+          // Look for the end of the JSON object
+          const jsonStart = firstStart.start + (firstStart.type === 'TOKEN' ? 9 : 8);
+          const jsonEnd = streamBuffer.indexOf('}', jsonStart);
+
+          if (jsonEnd === -1) {
+            // Partial marker found, wait for more data
+            break;
+          }
+
+          const fullMarker = streamBuffer.substring(firstStart.start, jsonEnd + 1);
+          const jsonStr = streamBuffer.substring(jsonStart, jsonEnd + 1);
+
           try {
-            const tokenData = JSON.parse(chunk.replace('__TOKEN__', ''));
-            updateTab(tabIndex, tab => ({ ...tab, tokenCount: tokenData }));
-          } catch { }
-          continue;
+            const data = JSON.parse(jsonStr);
+            if (firstStart.type === 'TOKEN') {
+              pageTokenCount = { input: data.input, output: data.output, isEstimate: data.isEstimate };
+              updateTab(tabIndex, tab => ({ ...tab, tokenCount: pageTokenCount }));
+            } else if (firstStart.type === 'META') {
+              if (data.tokenCount) {
+                pageTokenCount = data.tokenCount;
+                updateTab(tabIndex, tab => ({ ...tab, tokenCount: data.tokenCount }));
+              }
+              if (data.groundingSources?.length) {
+                pageGroundingSources = data.groundingSources;
+                updateTab(tabIndex, tab => ({ ...tab, groundingSources: data.groundingSources }));
+              }
+              if (data.searchEntryPointHtml) {
+                pageSearchEntryPointHtml = data.searchEntryPointHtml;
+                updateTab(tabIndex, tab => ({ ...tab, searchEntryPointHtml: data.searchEntryPointHtml }));
+              }
+            }
+          } catch (e) {
+            console.warn("Failed to parse marker JSON", e);
+          }
+
+          // Move everything BEFORE the marker to fullHtml
+          fullHtml += streamBuffer.substring(0, firstStart.start);
+          // Remove pre-marker text AND the marker from the buffer
+          streamBuffer = streamBuffer.substring(jsonEnd + 1);
+          searchIndex = 0; // Reset search since buffer changed
         }
 
-        if (chunk.startsWith('__META__')) {
-          try {
-            const meta = JSON.parse(chunk.replace('__META__', ''));
-            pageTokenCount = meta.tokenCount;
-            // Update with confirmed (non-estimate) values
-            updateTab(tabIndex, tab => ({ ...tab, tokenCount: pageTokenCount }));
-            if (meta.groundingSources?.length) {
-              pageGroundingSources = meta.groundingSources;
-              updateTab(tabIndex, tab => ({ ...tab, groundingSources: meta.groundingSources }));
-            }
-            if (meta.searchEntryPointHtml) {
-              pageSearchEntryPointHtml = meta.searchEntryPointHtml;
-              updateTab(tabIndex, tab => ({ ...tab, searchEntryPointHtml: meta.searchEntryPointHtml }));
-            }
-          } catch { }
-          continue;
-        }
-        fullHtml += chunk;
+        // After processing all markers, anything left in the buffer that is NOT 
+        // part of a valid potential marker can be moved to fullHtml.
+        const tokenStart = streamBuffer.indexOf('__TOKEN__');
+        const metaStart = streamBuffer.indexOf('__META__');
+        
+        const firstStart = (tokenStart !== -1 && (metaStart === -1 || tokenStart < metaStart)) 
+          ? tokenStart 
+          : metaStart;
 
-        const currentFullHtml = fullHtml;
+        if (firstStart === -1) {
+          // No full or partial marker starts found here.
+          // BUT, the buffer might end with a PARTIAL start like "__TOK"
+          const lastUnderscore = streamBuffer.lastIndexOf('__');
+          if (lastUnderscore !== -1 && lastUnderscore > streamBuffer.length - 10) {
+            // Potential marker starting at the end of buffer, preserve it
+            fullHtml += streamBuffer.substring(0, lastUnderscore);
+            streamBuffer = streamBuffer.substring(lastUnderscore);
+          } else {
+            // No markers at all
+            fullHtml += streamBuffer;
+            streamBuffer = '';
+          }
+        } else if (firstStart > 0) {
+          // Move everything up to the marker start
+          fullHtml += streamBuffer.substring(0, firstStart);
+          streamBuffer = streamBuffer.substring(firstStart);
+        }
+
         let extractedBreadcrumb: Breadcrumb | null = null;
-        if (!titleExtracted && currentFullHtml.includes('</title>')) {
-          extractedBreadcrumb = extractTitleFromHtml(currentFullHtml);
+        if (!titleExtracted && fullHtml.includes('</title>')) {
+          extractedBreadcrumb = extractTitleFromHtml(fullHtml);
           if (extractedBreadcrumb) titleExtracted = true;
         }
 
         updateTab(tabIndex, tab => ({
           ...tab,
-          generatedContent: currentFullHtml,
+          generatedContent: fullHtml,
           loadingMessage: 'Streaming website from Gemini 3.1 Flash',
+          tokenCount: pageTokenCount,
           ...(extractedBreadcrumb ? { breadcrumb: extractedBreadcrumb } : {}),
         }));
       }
@@ -172,17 +232,65 @@ const App: React.FC = () => {
       if (e?.name === 'AbortError' || controller.signal.aborted) return;
       console.error('Generation failed', e);
       const errorMessage = e instanceof Error ? e.message : 'Failed to generate page';
-      updateTab(tabIndex, tab => ({
-        ...tab,
-        breadcrumb: fallbackBreadcrumb,
-        generatedContent: `<div class="p-10 bg-white text-black">
-          <h1 class="text-2xl font-bold text-red-600 mb-4">Generation Error</h1>
-          <p class="mb-4">${errorMessage}</p>
-          <div class="p-4 bg-gray-100 rounded border border-gray-300 font-mono text-sm">
-            Check your Environment Variables in the Settings menu.
+      
+      const is503 = errorMessage.includes('503') || errorMessage.toLowerCase().includes('high demand') || errorMessage.toLowerCase().includes('unavailable');
+      const isApiKeyError = !is503 && (errorMessage.toLowerCase().includes('api key') || errorMessage.toLowerCase().includes('environment variable'));
+      
+      const title = is503 ? 'Gemini is Busy' : 'Generation Failed';
+      const detail = is503 
+        ? 'The model is currently experiencing very high demand. This is usually temporary and resolves in a few seconds.'
+        : errorMessage;
+      const icon = is503 ? 'speed' : 'error';
+      const iconColor = is503 ? '#8ab4f8' : '#f28b82';
+
+      const errorHtml = `<div style="padding: 40px; font-family: 'Google Sans', sans-serif; background: #121212; color: #fff; min-height: 100vh; display: flex; align-items: center; justify-content: center;">
+          <div style="max-width: 500px; width: 100%; background: #1e1e1e; border: 1px solid #333; border-radius: 16px; padding: 32px; box-shadow: 0 20px 50px rgba(0,0,0,0.5); text-align: center;">
+            <div style="background: rgba(${is503 ? '138, 180, 248' : '217, 48, 37'}, 0.1); width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 24px;">
+              <span class="material-symbols-outlined" style="color: ${iconColor}; font-size: 32px;">${icon}</span>
+            </div>
+            <h1 style="color: #fff; margin: 0 0 12px; font-size: 24px; font-weight: 500;">${title}</h1>
+            <p style="font-size: 16px; line-height: 1.6; color: #9aa0a6; margin: 0 0 24px;">${detail}</p>
+            
+            ${isApiKeyError ? `
+              <div style="margin-bottom: 24px; padding: 16px; background: #2a2a2a; border-radius: 8px; text-align: left; border-left: 4px solid #8ab4f8;">
+                <p style="margin: 0; font-size: 13px; color: #8ab4f8; font-weight: 500;">Instruction</p>
+                <p style="margin: 4px 0 0; font-size: 13px; color: #c4c7cc;">Please set your <b>Gemini API Key</b> in the browser settings menu (3-dots icon) or in the Studio's Environment Variables.</p>
+              </div>
+            ` : ''}
+            
+            <div style="display: flex; gap: 12px; justify-content: center;">
+              <button onclick="window.location.reload()" style="padding: 12px 24px; background: #333; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-weight: 500; font-family: inherit; transition: background 0.2s;">
+                Reload App
+              </button>
+              <button onclick="FlashLiteAPI.performAction('Retry generation')" style="padding: 12px 24px; background: #8ab4f8; color: #000; border: none; border-radius: 8px; cursor: pointer; font-weight: 500; font-family: inherit; transition: opacity 0.2s;">
+                Try Again
+              </button>
+            </div>
           </div>
-        </div>`,
-      }));
+        </div>`;
+
+      const errorPage: Page = {
+        html: errorHtml,
+        breadcrumb: { sitename: 'Error', page: 'Failed to generate' },
+        scrollPosition: 0,
+        timestamp: Date.now(),
+        tokenCount: null,
+        prompt,
+        contextHtml: currentHtml,
+        isGrounded,
+      };
+
+      updateTab(tabIndex, tab => {
+        const newHistory = [...tab.history.slice(0, tab.currentIndex + 1), errorPage];
+        return {
+          ...tab,
+          history: newHistory,
+          currentIndex: newHistory.length - 1,
+          generatedContent: errorHtml,
+          breadcrumb: errorPage.breadcrumb,
+          tokenCount: null,
+        };
+      });
     } finally {
       if (abortControllersRef.current.get(tabId) === controller) {
         updateTab(tabIndex, tab => ({

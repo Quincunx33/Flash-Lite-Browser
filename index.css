@@ -206,9 +206,24 @@
   background: #35363a;
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 0.5; }
-  50% { opacity: 1; }
+.action-btn-green {
+  color: #81c995 !important;
+}
+.action-btn-green:hover {
+  background: rgba(129, 201, 149, 0.1) !important;
+  color: #a3e635 !important;
+}
+
+.action-btn-gray {
+  color: #9aa0a6 !important;
+}
+.action-btn-gray:hover {
+  background: rgba(154, 160, 166, 0.1) !important;
+  color: #e8eaed !important;
+}
+
+.address-actions {
+  flex-shrink: 0;
 }
 
 /* Focus Indicators (keyboard accessibility) */
@@ -809,10 +824,9 @@ button:focus-visible,
     gap: 2px;
   }
 
-  /* Hide back, forward, refresh/stop — keep only home */
+  /* Hide back and forward nav on mobile to save space, but KEEP refresh/stop */
   .nav-buttons .nav-btn:nth-child(1),
-  .nav-buttons .nav-btn:nth-child(2),
-  .nav-buttons .nav-btn:nth-child(3) {
+  .nav-buttons .nav-btn:nth-child(2) {
     display: none;
   }
 
@@ -824,6 +838,11 @@ button:focus-visible,
   .omnibar-input {
     font-size: 16px;
     padding: 6px 14px;
+    border-radius: 12px;
+  }
+
+  .nav-buttons {
+    gap: 0;
   }
 
   /* -- NEW TAB: show branding, hide buttons + submit -- */

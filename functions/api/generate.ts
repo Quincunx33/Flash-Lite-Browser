@@ -74,7 +74,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
     const responseStream = await ai.models.generateContentStream({
       model: MODEL_NAME,
-      contents: userPrompt,
+      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
       config: {
         systemInstruction: SYSTEM_PROMPT,
         tools: isGrounded ? [{ googleSearch: {} }] : undefined,
@@ -87,7 +87,26 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
     // Process stream in background
     (async () => {
+      // Send immediate initial marker so UI shows Loading state right away
+      await writer.write(encoder.encode(`__TOKEN__${JSON.stringify({ input: 0, output: 0, isEstimate: true })}`));
+
       let inputTokens = 0;
+
+      // Try to get input tokens first
+      try {
+        const countResult = await ai.models.countTokens({
+          model: MODEL_NAME,
+          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+        });
+        inputTokens = countResult.totalTokens || 0;
+      } catch (e) {
+        console.warn("Input token count failed, using estimate", e);
+        inputTokens = Math.round(userPrompt.length / 4);
+      }
+
+      // Send initial token counts
+      await writer.write(encoder.encode(`__TOKEN__${JSON.stringify({ input: inputTokens, output: 0, isEstimate: true })}`));
+
       let outputTokens = 0;
       let totalChars = 0;
       let groundingSources: any[] = [];
@@ -113,9 +132,9 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
           const text = chunk.text;
           if (text) {
             totalChars += text.length;
-            const estimatedOutput = Math.round(totalChars / 4);
+            const estimatedOutput = outputTokens > 0 ? outputTokens : Math.round(totalChars / 4);
             // Send tokens marker
-            await writer.write(encoder.encode(`__TOKEN__${JSON.stringify({ input: inputTokens, output: estimatedOutput, isEstimate: true })}`));
+            await writer.write(encoder.encode(`__TOKEN__${JSON.stringify({ input: inputTokens, output: estimatedOutput, isEstimate: outputTokens === 0 })}`));
             await writer.write(encoder.encode(text));
           }
         }

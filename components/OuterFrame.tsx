@@ -9,12 +9,14 @@ const AnimatedNumber: React.FC<{ value: number; prefix?: string; prefixVisible?:
 
   useEffect(() => {
     if (!animate) {
-      cancelAnimationFrame(rafRef.current);
       currentRef.current = value;
       setDisplayed(value);
       return;
     }
     const target = value;
+    if (currentRef.current === 0 && target > 0) {
+      currentRef.current = target * 0.5; // Start halfway for faster feeling on first update
+    }
     const step = () => {
       const current = currentRef.current;
       const diff = target - current;
@@ -23,7 +25,7 @@ const AnimatedNumber: React.FC<{ value: number; prefix?: string; prefixVisible?:
         setDisplayed(target);
         return;
       }
-      currentRef.current = current + diff * 0.15;
+      currentRef.current = current + diff * 0.5; // Slightly slower for more natural growth
       setDisplayed(Math.round(currentRef.current));
       rafRef.current = requestAnimationFrame(step);
     };
@@ -33,7 +35,7 @@ const AnimatedNumber: React.FC<{ value: number; prefix?: string; prefixVisible?:
 
   return (
     <span className="animated-number">
-      {prefix && <span className="animated-prefix" style={{ opacity: prefixVisible ? 0.7 : 0 }}>{prefix}</span>}
+      {prefix && <span className="animated-prefix" style={{ opacity: prefixVisible ? 0.7 : 0, marginRight: '1px' }}>{prefix}</span>}
       {displayed.toLocaleString()}
     </span>
   );
@@ -85,11 +87,9 @@ export const OuterFrame: React.FC<OuterFrameProps> = ({
     return () => window.removeEventListener('resize', update);
   }, []);
 
-  const isOutputPhase = (tokenCount?.output ?? 0) > 0;
-  const arrowIcon = isOutputPhase ? 'arrow_downward' : 'arrow_upward';
-  const phaseClass = isOutputPhase ? 'token-out' : 'token-in';
   const totalTokens = (tokenCount?.input ?? 0) + (tokenCount?.output ?? 0);
-
+  const isOutputPhase = (tokenCount?.output ?? 0) > 0;
+  
   const frameStyle: React.CSSProperties = zoom > 1 ? {
     zoom,
     width: `calc(100vw / ${zoom})`,
@@ -105,20 +105,30 @@ export const OuterFrame: React.FC<OuterFrameProps> = ({
           <h1 className="outer-title">Flash-Lite Browser</h1>
           <div className="outer-caption-row">
             <p className="outer-caption">Imagine any website, generated in real-time by Gemini 3.1 Flash-Lite</p>
-            {tokenCount && (
-              <span className="token-display" aria-live="polite" aria-atomic="true">
-                <span className={phaseClass}>
-                  <span className="material-symbols-outlined token-icon" aria-hidden="true">
-                    {isLoading ? arrowIcon : 'check'}
+            <div className="token-display-area" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              {tokenCount && (
+                <span className="token-display" aria-live="polite" aria-atomic="true">
+                  <span className={isOutputPhase ? "token-out" : "token-in"}>
+                    <span className="material-symbols-outlined token-icon" aria-hidden="true" style={{ fontSize: '18px', marginRight: '4px' }}>
+                      {isLoading ? (isOutputPhase ? 'pending' : 'arrow_upward') : 'check'}
+                    </span>
+                    <AnimatedNumber value={totalTokens} prefix={tokenCount.isEstimate ? '~' : ''} animate={isLoading} />
+                    <span className="token-label" style={{ marginLeft: '6px', opacity: 0.7 }}>tokens</span>
                   </span>
-                  <AnimatedNumber value={totalTokens} prefix="~" prefixVisible={!!tokenCount.isEstimate} animate={isLoading} />
                 </span>
-                {' '}
-                <span className="token-label">tokens in</span>
-                {' '}
-                <span className="token-label"><ElapsedTimer isActive={isLoading} /></span>
-              </span>
-            )}
+              )}
+              {isLoading && !tokenCount && (
+                <span className="token-display token-in">
+                  <span className="material-symbols-outlined token-icon rotating" aria-hidden="true" style={{ fontSize: '18px', marginRight: '4px' }}>sync</span>
+                  <span className="token-label" style={{ opacity: 0.7 }}>Initializing...</span>
+                </span>
+              )}
+              {(isLoading || (tokenCount && totalTokens > 0)) && (
+                <span className="timer-display" style={{ borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: '12px' }}>
+                  <ElapsedTimer isActive={isLoading} />
+                </span>
+              )}
+            </div>
           </div>
         </div>
 

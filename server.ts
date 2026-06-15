@@ -82,23 +82,29 @@ Create a complete, detailed, realistic-looking web page based on this descriptio
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.setHeader('Transfer-Encoding', 'chunked');
 
-      // countTokens using new SDK
+      // Send immediate initial marker so UI shows Loading state right away
+      res.write(`__TOKEN__${JSON.stringify({ input: 0, output: 0, isEstimate: true })}`);
+      if ((res as any).flush) (res as any).flush();
+
+      // countTokens
       let inputTokens = 0;
       try {
         const countResult = await ai.models.countTokens({
           model: MODEL_NAME,
-          contents: userPrompt,
+          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
         });
         inputTokens = countResult.totalTokens || 0;
       } catch (e) {
-        console.warn("Token count failed on server", e);
+        console.warn("Token count failed on server, using estimate", e);
+        inputTokens = Math.round(userPrompt.length / 4);
       }
 
       res.write(`__TOKEN__${JSON.stringify({ input: inputTokens, output: 0, isEstimate: true })}`);
+      if ((res as any).flush) (res as any).flush();
 
-      const response = await ai.models.generateContentStream({
+      const responseStream = await ai.models.generateContentStream({
         model: MODEL_NAME,
-        contents: userPrompt,
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
         config: {
           systemInstruction: SYSTEM_PROMPT,
           tools: isGrounded ? [{ googleSearch: {} }] : undefined,
@@ -110,7 +116,7 @@ Create a complete, detailed, realistic-looking web page based on this descriptio
       let groundingSources: any[] = [];
       let searchEntryPointHtml = '';
 
-      for await (const chunk of response) {
+      for await (const chunk of responseStream) {
         if (chunk.usageMetadata) {
           inputTokens = chunk.usageMetadata.promptTokenCount || inputTokens;
           outputTokens = chunk.usageMetadata.candidatesTokenCount || 0;
@@ -129,13 +135,15 @@ Create a complete, detailed, realistic-looking web page based on this descriptio
         const text = chunk.text;
         if (text) {
           totalChars += text.length;
-          const estimatedOutput = Math.round(totalChars / 4);
-          res.write(`__TOKEN__${JSON.stringify({ input: inputTokens, output: estimatedOutput, isEstimate: true })}`);
+          const estimatedOutput = outputTokens > 0 ? outputTokens : Math.round(totalChars / 4);
+          res.write(`__TOKEN__${JSON.stringify({ input: inputTokens, output: estimatedOutput, isEstimate: outputTokens === 0 })}`);
           res.write(text);
+          if ((res as any).flush) (res as any).flush();
         }
       }
 
       res.write(`__META__${JSON.stringify({ tokenCount: { input: inputTokens, output: outputTokens }, groundingSources, searchEntryPointHtml })}`);
+      if ((res as any).flush) (res as any).flush();
       res.end();
 
     } catch (error: any) {
