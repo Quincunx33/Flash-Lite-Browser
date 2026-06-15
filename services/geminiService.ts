@@ -1,6 +1,6 @@
 import { TokenCount } from '../types';
 
-export const MODEL_NAME = 'gemini-2.0-flash-lite-preview-02-05'; 
+export const MODEL_NAME = 'gemini-3.1-flash-lite'; 
 
 export const SYSTEM_PROMPT = `
 You are powered by Gemini 3.1 Flash-Lite, a new fast, light-weight model released in March 2026. You generate complete web pages as HTML documents.
@@ -78,8 +78,15 @@ export async function* streamPageGeneration(
     });
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to generate page');
+      let errorMessage = 'Failed to generate page';
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.error || errorMessage;
+      } catch (e) {
+        // If not JSON, maybe it's a 404 or something else
+        errorMessage = `Error ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
     }
 
     const reader = response.body?.getReader();
@@ -89,7 +96,8 @@ export async function* streamPageGeneration(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      yield decoder.decode(value);
+      const text = decoder.decode(value, { stream: true });
+      yield text;
     }
   } catch (error) {
     if ((error as any).name === 'AbortError') return;

@@ -7,7 +7,7 @@ interface Env {
   GEMINI_API_KEY_4?: string;
 }
 
-const MODEL_NAME = 'gemini-2.0-flash-lite-preview-02-05';
+const MODEL_NAME = 'gemini-3.1-flash-lite';
 
 const SYSTEM_PROMPT = `
 You are powered by Gemini 3.1 Flash-Lite, a new fast, light-weight model released in March 2026. You generate complete web pages as HTML documents.
@@ -17,6 +17,8 @@ Include Material Symbols for icons.
 Fill the page with rich, realistic content.
 `;
 
+type PagesFunction<T = any> = (context: { request: Request; env: T }) => Promise<Response>;
+
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   try {
     const { request, env } = context;
@@ -25,6 +27,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
     // API Key Rotation Logic
     let apiKey = userApiKey && userApiKey.trim() !== '' ? userApiKey : null;
+    let usedSystemKey = false;
     
     if (!apiKey) {
       const systemKeys = [
@@ -32,24 +35,26 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
         env.GEMINI_API_KEY_2,
         env.GEMINI_API_KEY_3,
         env.GEMINI_API_KEY_4
-      ].filter(k => k && k !== 'undefined' && k !== '');
+      ].map(k => k?.trim()).filter(k => k && k !== 'undefined' && k !== '');
 
       if (systemKeys.length > 0) {
         apiKey = systemKeys[Math.floor(Math.random() * systemKeys.length)];
+        usedSystemKey = true;
       }
     }
 
     if (!apiKey) {
-      return new Response(JSON.stringify({ error: "No API key available." }), { 
+      return new Response(JSON.stringify({ 
+        error: "No API key available. Please add GEMINI_API_KEY_1-4 in Cloudflare Pages 'Variables and secrets' for both Production and Preview environments." 
+      }), { 
         status: 400,
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
-    const genAI = new GoogleGenAI(apiKey);
-    const model = genAI.getGenerativeModel({ 
-      model: MODEL_NAME,
-      systemInstruction: SYSTEM_PROMPT
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
     });
 
     const isEdit = currentPageHtml !== null;
@@ -67,14 +72,13 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
        userPrompt += `\nUse Google Search to ground the content in real-world data.`;
     }
 
-    const generationConfig: any = {};
-    if (isGrounded) {
-       generationConfig.tools = [{ googleSearch: {} }];
-    }
-
-    const result = await model.generateContentStream({
-      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-      generationConfig
+    const responseStream = await ai.models.generateContentStream({
+      model: MODEL_NAME,
+      contents: userPrompt,
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        tools: isGrounded ? [{ googleSearch: {} }] : undefined,
+      }
     });
 
     const { readable, writable } = new TransformStream();
@@ -90,7 +94,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       let searchEntryPointHtml = '';
 
       try {
-        for await (const chunk of result.stream) {
+        for await (const chunk of responseStream) {
           if (chunk.usageMetadata) {
             inputTokens = chunk.usageMetadata.promptTokenCount || inputTokens;
             outputTokens = chunk.usageMetadata.candidatesTokenCount || 0;
@@ -106,16 +110,17 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
             searchEntryPointHtml = groundingMeta.searchEntryPoint.renderedContent;
           }
 
-          const text = chunk.text();
+          const text = chunk.text;
           if (text) {
             totalChars += text.length;
             const estimatedOutput = Math.round(totalChars / 4);
-            // We can't easily write intermediate custom tags like __TOKEN__ in a standard stream without a custom client,
-            // but for simplicity, we pass through the text.
+            // Send tokens marker
+            await writer.write(encoder.encode(`__TOKEN__${JSON.stringify({ input: inputTokens, output: estimatedOutput, isEstimate: true })}`));
             await writer.write(encoder.encode(text));
           }
         }
-        // Metadata handled at the end if needed, but for a raw stream we just finish.
+        // Send final metadata
+        await writer.write(encoder.encode(`__META__${JSON.stringify({ tokenCount: { input: inputTokens, output: outputTokens }, groundingSources, searchEntryPointHtml })}`));
         await writer.close();
       } catch (err: any) {
         await writer.write(encoder.encode(`\n\nERROR: ${err.message}`));

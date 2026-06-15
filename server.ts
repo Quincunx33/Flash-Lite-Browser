@@ -22,7 +22,7 @@ async function startServer() {
       process.env.GEMINI_API_KEY_3,
       process.env.GEMINI_API_KEY_4,
       process.env.GEMINI_API_KEY // Fallback
-    ].filter(k => k && k !== 'undefined' && k !== '');
+    ].map(k => k?.trim()).filter(k => k && k !== 'undefined' && k !== '');
 
     if (keys.length === 0) return null;
 
@@ -40,10 +40,9 @@ async function startServer() {
     }
 
     try {
-      const genAI = new GoogleGenAI(apiKey);
-      const model = genAI.getGenerativeModel({ 
-        model: MODEL_NAME,
-        systemInstruction: SYSTEM_PROMPT
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
       });
 
       const isEdit = currentPageHtml !== null;
@@ -79,20 +78,16 @@ Create a complete, detailed, realistic-looking web page based on this descriptio
         userPrompt += `\nIMPORTANT: The user is on a MOBILE device with a narrow viewport. Design mobile-first:\n- Use a single-column layout\n- Use responsive Tailwind classes\n- Avoid horizontal scrolling\n- Stack elements vertically\n- Keep navigation simple\n`;
       }
 
-      const config: any = {};
-      if (isGrounded) {
-        config.tools = [{ googleSearch: {} }];
-      }
-
       // Setting up streaming response
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.setHeader('Transfer-Encoding', 'chunked');
 
-      // Pre-flight: count tokens
+      // countTokens using new SDK
       let inputTokens = 0;
       try {
-        const countResult = await model.countTokens({
-          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+        const countResult = await ai.models.countTokens({
+          model: MODEL_NAME,
+          contents: userPrompt,
         });
         inputTokens = countResult.totalTokens || 0;
       } catch (e) {
@@ -101,9 +96,13 @@ Create a complete, detailed, realistic-looking web page based on this descriptio
 
       res.write(`__TOKEN__${JSON.stringify({ input: inputTokens, output: 0, isEstimate: true })}`);
 
-      const result = await model.generateContentStream({
-        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-        generationConfig: config
+      const response = await ai.models.generateContentStream({
+        model: MODEL_NAME,
+        contents: userPrompt,
+        config: {
+          systemInstruction: SYSTEM_PROMPT,
+          tools: isGrounded ? [{ googleSearch: {} }] : undefined,
+        }
       });
 
       let outputTokens = 0;
@@ -111,11 +110,9 @@ Create a complete, detailed, realistic-looking web page based on this descriptio
       let groundingSources: any[] = [];
       let searchEntryPointHtml = '';
 
-      for await (const chunk of result.stream) {
+      for await (const chunk of response) {
         if (chunk.usageMetadata) {
-          if (chunk.usageMetadata.promptTokenCount) {
-             inputTokens = chunk.usageMetadata.promptTokenCount;
-          }
+          inputTokens = chunk.usageMetadata.promptTokenCount || inputTokens;
           outputTokens = chunk.usageMetadata.candidatesTokenCount || 0;
         }
 
@@ -129,16 +126,12 @@ Create a complete, detailed, realistic-looking web page based on this descriptio
           searchEntryPointHtml = groundingMeta.searchEntryPoint.renderedContent;
         }
 
-        try {
-          const text = chunk.text();
-          if (text) {
-            totalChars += text.length;
-            const estimatedOutput = Math.round(totalChars / 4);
-            res.write(`__TOKEN__${JSON.stringify({ input: inputTokens, output: estimatedOutput, isEstimate: true })}`);
-            res.write(text);
-          }
-        } catch (e) {
-          // Sometimes chunk.text() fails if there's no text in the chunk
+        const text = chunk.text;
+        if (text) {
+          totalChars += text.length;
+          const estimatedOutput = Math.round(totalChars / 4);
+          res.write(`__TOKEN__${JSON.stringify({ input: inputTokens, output: estimatedOutput, isEstimate: true })}`);
+          res.write(text);
         }
       }
 
