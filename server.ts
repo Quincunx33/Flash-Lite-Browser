@@ -3,6 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { SYSTEM_PROMPT, MODEL_NAME } from "./services/geminiService";
+import { checkPromptSafety } from "./utils/safety";
 
 async function startServer() {
   const app = express();
@@ -31,8 +32,65 @@ async function startServer() {
     return selectedKey;
   };
 
+  const ipCounts = new Map<string, number>();
+
+  const getClientIp = (req: any) => {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (forwarded) {
+      if (typeof forwarded === 'string') {
+        return forwarded.split(',')[0].trim();
+      } else if (Array.isArray(forwarded)) {
+        return forwarded[0].trim();
+      }
+    }
+    return req.socket.remoteAddress || 'unknown';
+  };
+
+  const getCookie = (req: any, name: string): string => {
+    const list: Record<string, string> = {};
+    const cookieHeader = req.headers.cookie;
+    if (!cookieHeader) return '';
+
+    cookieHeader.split(';').forEach((cookie: string) => {
+      const parts = cookie.split('=');
+      const key = parts.shift()?.trim();
+      if (key) {
+        list[key] = decodeURIComponent(parts.join('='));
+      }
+    });
+
+    return list[name] || '';
+  };
+
   app.post("/api/generate", async (req, res) => {
     const { prompt, currentPageHtml, isGrounded, formState, isMobile, userApiKey } = req.body;
+
+    // Check prompt safety
+    const safety = checkPromptSafety(prompt);
+    if (!safety.isSafe) {
+      return res.status(400).json({ error: `🚨 Blocked: ${safety.reasonBn} (Inappropriate content request is not allowed.)` });
+    }
+
+    // Verify limit if using system API Key
+    const usingSystemKey = !userApiKey || !userApiKey.trim();
+    if (usingSystemKey) {
+      const ip = getClientIp(req);
+      const cookieVal = getCookie(req, '__fl_sec_count');
+      const cookieCount = cookieVal ? parseInt(cookieVal, 10) : 0;
+      const ipCount = ipCounts.get(ip) || 0;
+      const currentCount = Math.max(cookieCount, ipCount);
+
+      if (currentCount >= 5) {
+        return res.status(400).json({
+          error: "🚨 LIMIT_REACHED: You have reached the limit of 5 free generations on this device. Please provide your own Gemini API Key in Settings to continue."
+        });
+      }
+
+      // Increment and set secure HTTP-Only cookie
+      const nextCount = currentCount + 1;
+      ipCounts.set(ip, nextCount);
+      res.setHeader('Set-Cookie', `__fl_sec_count=${nextCount}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`);
+    }
 
     const apiKey = getApiKey(userApiKey);
     if (!apiKey) {

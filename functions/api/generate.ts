@@ -1,4 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
+import { checkPromptSafety } from "../../utils/safety";
 
 interface Env {
   GEMINI_API_KEY_1?: string;
@@ -17,6 +18,19 @@ Include Material Symbols for icons.
 Fill the page with rich, realistic content.
 `;
 
+const getCookie = (request: Request, name: string): string => {
+  const cookieHeader = request.headers.get('Cookie') || '';
+  const list: Record<string, string> = {};
+  cookieHeader.split(';').forEach((cookie: string) => {
+    const parts = cookie.split('=');
+    const key = parts.shift()?.trim();
+    if (key) {
+      list[key] = decodeURIComponent(parts.join('='));
+    }
+  });
+  return list[name] || '';
+};
+
 type PagesFunction<T = any> = (context: { request: Request; env: T }) => Promise<Response>;
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
@@ -24,6 +38,35 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     const { request, env } = context;
     const body: any = await request.json();
     const { prompt, currentPageHtml, isGrounded, formState, isMobile, userApiKey } = body;
+
+    // Check prompt safety
+    const safety = checkPromptSafety(prompt);
+    if (!safety.isSafe) {
+      return new Response(JSON.stringify({ 
+        error: `🚨 Blocked: ${safety.reasonBn} (Inappropriate content request is not allowed.)` 
+      }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Rate Limit Validation
+    const usingSystemKey = !userApiKey || !userApiKey.trim();
+    let setCookieValue: number | null = null;
+    if (usingSystemKey) {
+      const cookieVal = getCookie(request, '__fl_sec_count');
+      const currentCount = cookieVal ? parseInt(cookieVal, 10) : 0;
+
+      if (currentCount >= 5) {
+        return new Response(JSON.stringify({ 
+          error: "🚨 LIMIT_REACHED: You have reached the limit of 5 free generations on this device. Please provide your own Gemini API Key in Settings to continue." 
+        }), { 
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      setCookieValue = currentCount + 1;
+    }
 
     // API Key Rotation Logic
     let apiKey = userApiKey && userApiKey.trim() !== '' ? userApiKey : null;
@@ -147,11 +190,17 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       }
     })();
 
+    const headers: Record<string, string> = {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Transfer-Encoding': 'chunked'
+    };
+
+    if (setCookieValue !== null) {
+      headers['Set-Cookie'] = `__fl_sec_count=${setCookieValue}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`;
+    }
+
     return new Response(readable, {
-      headers: { 
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Transfer-Encoding': 'chunked'
-      }
+      headers
     });
 
   } catch (error: any) {

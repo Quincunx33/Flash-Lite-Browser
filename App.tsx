@@ -8,6 +8,7 @@ import { streamPageGeneration } from './services/geminiService';
 import { Page, Breadcrumb, TokenCount, FormFieldState, GroundingSource, Tab, createTab } from './types';
 import { siteNameFromPrompt, parsePageFromHref, extractTitleFromHtml } from './utils/urlHelpers';
 import { savePage, getSavedPages, SavedPage, deleteSavedPage } from './services/db';
+import { checkPromptSafety } from './utils/safety';
 
 const App: React.FC = () => {
   // Tab state
@@ -18,6 +19,12 @@ const App: React.FC = () => {
   const [isGrounded, setIsGrounded] = useState(false);
   const [userApiKey, setUserApiKey] = useState<string>(() => {
     return localStorage.getItem('GEMINI_API_KEY_OVERRIDE') || '';
+  });
+
+  // Free generation limit per device
+  const [freeGenCount, setFreeGenCount] = useState<number>(() => {
+    const val = localStorage.getItem('FREE_GEN_COUNT');
+    return val ? parseInt(val, 10) : 0;
   });
 
   // Saved Pages state
@@ -77,6 +84,60 @@ const App: React.FC = () => {
   ) => {
     const tabIndex = activeTabIndex;
     const tabId = tabs[tabIndex].id;
+
+    // Client-side prompt safety validation
+    const safety = checkPromptSafety(prompt);
+    if (!safety.isSafe) {
+      updateTab(tabIndex, tab => ({
+        ...tab,
+        loading: false,
+        generatedContent: `<div style="padding: 40px; font-family: 'Google Sans', sans-serif; background: #121212; color: #fff; min-height: 100vh; display: flex; align-items: center; justify-content: center;">
+          <div style="max-width: 550px; width: 100%; background: #1e1e1e; border: 1px solid #333; border-radius: 16px; padding: 32px; box-shadow: 0 20px 50px rgba(0,0,0,0.5); text-align: center;">
+            <div style="background: rgba(219, 68, 85, 0.1); width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 24px;">
+              <span class="material-symbols-outlined" style="color: #f28b82; font-size: 32px;">security</span>
+            </div>
+            <h1 style="color: #fff; margin: 0 0 12px; font-size: 24px; font-weight: 500;">🚨 Blocked / ব্লক করা হয়েছে</h1>
+            <p style="font-size: 15px; line-height: 1.6; color: #9aa0a6; margin: 0 0 24px; text-align: left;">
+              <b>বাংলা:</b> ${safety.reasonBn}<br/>
+              <b>English:</b> ${safety.reason}
+            </p>
+            <div style="padding: 12px; background: #2b2b2b; border-radius: 8px; font-size: 13px; color: #8ab4f8; margin-bottom: 24px;">
+              অনুগ্রহ করে উপরের অ্যাড্রেস বারে একটি সঠিক এবং নিরাপদ প্রম্পট লিখে আবার চেষ্টা করুন।<br/>
+              Please enter a safe prompt in the address bar above to browse or create a page.
+            </div>
+          </div>
+        </div>`,
+        breadcrumb: { sitename: 'Blocked', page: 'Safety Alert' },
+      }));
+      return;
+    }
+
+    // Free generation limit check (5 per device) when using the system API Key
+    if (!userApiKey || !userApiKey.trim()) {
+      if (freeGenCount >= 5) {
+        updateTab(tabIndex, tab => ({
+          ...tab,
+          loading: false,
+          generatedContent: `<div style="padding: 40px; font-family: 'Google Sans', sans-serif; background: #121212; color: #fff; min-height: 100vh; display: flex; align-items: center; justify-content: center;">
+            <div style="max-width: 550px; width: 100%; background: #1e1e1e; border: 1px solid #e0b44c; border-radius: 16px; padding: 32px; box-shadow: 0 20px 50px rgba(0,0,0,0.5); text-align: center;">
+              <div style="background: rgba(224, 180, 76, 0.1); width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 24px;">
+                <span class="material-symbols-outlined" style="color: #fdd835; font-size: 32px;">vpn_key</span>
+              </div>
+              <h1 style="color: #fff; margin: 0 0 12px; font-size: 24px; font-weight: 500;">⏳ Free Limit Reached / ফ্রি লিমিট শেষ</h1>
+              <p style="font-size: 15px; line-height: 1.6; color: #9aa0a6; margin: 0 0 24px; text-align: left;">
+                <b>বাংলা:</b> আপনি আপনার ডিভাইসের ৫টি ফ্রি জেনারেশনের লিমিট অতিক্রম করেছেন। জেনারেশন চালু রাখতে অনুগ্রহ করে উপরের ৩-ডট মেনু (Settings/Settings icon) থেকে আপনার নিজের <b>Gemini API Key</b> যুক্ত করুন।<br/><br/>
+                <b>English:</b> You have reached the limit of 5 free generations on this device. To continue generating, please add your own <b>Gemini API Key</b> from the 3-dot menu in the address bar settings.
+              </p>
+              <div style="padding: 12px; background: #2b2b2b; border-radius: 8px; font-size: 13px; color: #8ab4f8; margin-bottom: 24px; text-align: center;">
+                আপনার ফ্রি জেনারেশন সংখ্যা: <b>${freeGenCount} / 5</b>
+              </div>
+            </div>
+          </div>`,
+          breadcrumb: { sitename: 'Limit Reached', page: 'API Limit Alert' },
+        }));
+        return;
+      }
+    }
 
     // Abort controllers keyed by tab id
     if (!abortControllersRef.current) abortControllersRef.current = new Map();
@@ -261,11 +322,48 @@ const App: React.FC = () => {
         }
       });
 
+      // Increment free generation count if using system API Key
+      if (!userApiKey || !userApiKey.trim()) {
+        setFreeGenCount(prev => {
+          const nextVal = prev + 1;
+          localStorage.setItem('FREE_GEN_COUNT', nextVal.toString());
+          return nextVal;
+        });
+      }
+
     } catch (e: any) {
       if (e?.name === 'AbortError' || controller.signal.aborted) return;
       console.error('Generation failed', e);
       const errorMessage = e instanceof Error ? e.message : 'Failed to generate page';
       
+      const isLimitReached = errorMessage.includes('LIMIT_REACHED');
+      if (isLimitReached) {
+        setFreeGenCount(5);
+        localStorage.setItem('FREE_GEN_COUNT', '5');
+        const limitHtml = `<div style="padding: 40px; font-family: 'Google Sans', sans-serif; background: #121212; color: #fff; min-height: 100vh; display: flex; align-items: center; justify-content: center;">
+            <div style="max-width: 550px; width: 100%; background: #1e1e1e; border: 1px solid #e0b44c; border-radius: 16px; padding: 32px; box-shadow: 0 20px 50px rgba(0,0,0,0.5); text-align: center;">
+              <div style="background: rgba(224, 180, 76, 0.1); width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 24px;">
+                <span class="material-symbols-outlined" style="color: #fdd835; font-size: 32px;">vpn_key</span>
+              </div>
+              <h1 style="color: #fff; margin: 0 0 12px; font-size: 24px; font-weight: 500;">⏳ Free Limit Reached / ফ্রি লিমিট শেষ</h1>
+              <p style="font-size: 15px; line-height: 1.6; color: #9aa0a6; margin: 0 0 24px; text-align: left;">
+                <b>বাংলা:</b> আপনি আপনার ডিভাইসের ৫টি ফ্রি জেনারেশনের লিমিট অতিক্রম করেছেন। জেনারেশন চালু রাখতে অনুগ্রহ করে উপরের ৩-ডট মেনু (Settings/Settings icon) থেকে আপনার নিজের <b>Gemini API Key</b> যুক্ত করুন।<br/><br/>
+                <b>English:</b> You have reached the limit of 5 free generations on this device. To continue generating, please add your own <b>Gemini API Key</b> from the 3-dot menu in the address bar settings.
+              </p>
+              <div style="padding: 12px; background: #2b2b2b; border-radius: 8px; font-size: 13px; color: #8ab4f8; margin-bottom: 24px; text-align: center;">
+                আপনার ফ্রি জেনারেশন সংখ্যা: <b>5 / 5</b>
+              </div>
+            </div>
+          </div>`;
+        updateTab(tabIndex, tab => ({
+          ...tab,
+          loading: false,
+          generatedContent: limitHtml,
+          breadcrumb: { sitename: 'Limit Reached', page: 'API Limit Alert' },
+        }));
+        return;
+      }
+
       const is503 = errorMessage.includes('503') || errorMessage.toLowerCase().includes('high demand') || errorMessage.toLowerCase().includes('unavailable');
       const isApiKeyError = !is503 && (errorMessage.toLowerCase().includes('api key') || errorMessage.toLowerCase().includes('environment variable'));
       

@@ -73,8 +73,8 @@ const SHELL_HTML = `<!DOCTYPE html>
 
       document.addEventListener('mouseover', (e) => {
         if (!selectionMode) return;
-        const el = e.target.closest('div, section, article, header, footer, aside, main, nav, p, h1, h2, h3, h4, h5, h6, ul, ol, li, a, button, img');
-        if (el && el !== document.body && el !== highlight) {
+        const el = e.target;
+        if (el && el !== document.body && el !== document.documentElement && el !== highlight) {
           const rect = el.getBoundingClientRect();
           highlight.style.top = rect.top + 'px';
           highlight.style.left = rect.left + 'px';
@@ -86,24 +86,29 @@ const SHELL_HTML = `<!DOCTYPE html>
           highlight.style.display = 'none';
           hoveredEl = null;
         }
-      });
+      }, true);
 
+      // Capturing listener to intercept selection clicks before any page scripts can consume them
       document.addEventListener('click', (e) => {
         if (selectionMode) {
           e.preventDefault();
           e.stopPropagation();
-          const el = e.target.closest('div, section, article, header, footer, aside, main, nav, p, h1, h2, h3, h4, h5, h6, ul, ol, li, a, button, img');
-          if (el && el !== document.body) {
+          const el = e.target;
+          if (el && el !== document.body && el !== document.documentElement && el !== highlight) {
             FlashLiteAPI.selectElement({
               html: el.outerHTML,
               tag: el.tagName.toLowerCase(),
-              text: el.innerText.substring(0, 100)
+              text: (el.innerText || el.textContent || '').trim().substring(0, 200)
             });
             selectionMode = false;
             highlight.style.display = 'none';
           }
-          return;
         }
+      }, true);
+
+      // Bubbling listener for normal navigation links
+      document.addEventListener('click', (e) => {
+        if (selectionMode) return;
         
         const link = e.target.closest('a');
         if (link && !link.onclick && !link.getAttribute('onclick')) {
